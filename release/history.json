@@ -1,0 +1,31 @@
+{
+  "versions": [
+    "1.1.0"
+  ],
+  "files": {
+    "root/agents.json": [
+      "81bf4b74f8e58e9b58f4781edc349a7b317f77177a890e68ee1985ae439e1027"
+    ],
+    "root/concepts.json": [
+      "d5f8526c243ae070bcec30b8193e24103619a2808305780cc4487025570de028"
+    ],
+    "root/domains.json": [
+      "75997d90cf3f3411c80f9cde64edf4c5bbab873002959f591b4e4c3fab58fbb2"
+    ],
+    "root/tasks.json": [
+      "3fd6f104bbcb98fe7316950c1594fbbf9d1bddcedf05d777b269e2d3022f44f3"
+    ],
+    "root/templates.json": [
+      "82e1c08f35d051fb7d845c3314783de96f11a72910cd997a0f429890186975b0"
+    ],
+    "root/watchlist.md": [
+      "d95804f01df584f8a9b9ed67043fdf4d35fc6aaf143604ae3ebba0c5131df8d9"
+    ],
+    "root/prompts/app_digest.md": [
+      "f5b9a153f6aace61046c9939c773532eb396ac6bd68fc722dfe4a5342595fdc0"
+    ],
+    "root/prompts/daily.md": [
+      "d4cc977ef6c660485bf2323e3d2f2b749eeddd4d5ae96b9ad5f59351a9520d92"
+    ]
+  }
+}
