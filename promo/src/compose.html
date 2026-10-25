@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>AI 情报台 宣传短片</title>
+<style>
+  @font-face { font-family: 'Saira'; src: url('../../app/renderer/assets/fonts/Saira.ttf') format('truetype'); font-weight: 100 900; font-stretch: 50% 125%; }
+  :root {
+    --paper: #f4f4f2; --sheet: #fff; --ink: #161616; --ink-2: #5c5c5c; --rule: #d9d9d6; --chip: #e4e4e0;
+    --signal: #fffa00; --tri-a: #ff00f0; --tri-c: #00ffa2;
+    --hatch: repeating-linear-gradient(-45deg, transparent 0 7px, rgba(22,22,22,.22) 7px 9px);
+    --ui: 'Saira', 'Noto Sans SC', 'Microsoft YaHei UI', sans-serif;
+    --text: 'Noto Sans SC', 'Microsoft YaHei UI', sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--paper); }
+  body { font-family: var(--ui); color: var(--ink); -webkit-font-smoothing: antialiased; }
+  .layer { position: absolute; inset: 0; background: var(--paper); will-change: transform, opacity, clip-path; }
+  .contours::before {
+    content: ''; position: absolute; inset: 0; background: rgba(22,22,22,.075);
+    -webkit-mask: url('../../app/renderer/assets/contours/contour-a.svg') right -14rem top -10rem / 74rem auto no-repeat,
+                  url('../../app/renderer/assets/contours/contour-b.svg') left -10rem bottom -22rem / 56rem auto no-repeat;
+  }
+  .tri { position: absolute; left: 0; right: 0; height: 6px; display: grid; grid-template-columns: repeat(3, 1fr); }
+  .tri i:nth-child(1) { background: var(--tri-a); } .tri i:nth-child(2) { background: var(--signal); } .tri i:nth-child(3) { background: var(--tri-c); }
+  .eyebrow { font-size: 22px; font-weight: 600; font-stretch: 125%; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-2); }
+  .eyebrow::before { content: '// '; letter-spacing: 0; }
+  .wipe { display: inline-block; }
+  .seal { display: inline-grid; place-items: center; background: var(--signal); color: var(--ink); font-weight: 800; font-stretch: 125%;
+          clip-path: polygon(0 0, 100% 0, 100% calc(100% - 22%), calc(100% - 22%) 100%, 0 100%); }
+  .fig { font-stretch: 112%; font-variant-numeric: tabular-nums; }
+  .facts { display: flex; flex-wrap: wrap; font-size: 26px; font-stretch: 112%; color: var(--ink-2); }
+  .facts span { padding: 0 22px; border-left: 2px solid var(--rule); }
+  .facts span:first-child { padding-left: 0; border-left: 0; }
+  .marker { display: inline-block; background: var(--signal); color: var(--ink); font-weight: 800; padding: 4px 18px; }
+
+  /* 开场：深色 */
+  #s-open { background: #161616; color: #ededed; }
+  #s-open .eyebrow { color: #9a9a9a; position: absolute; left: 160px; top: 300px; }
+  #s-open .big { position: absolute; left: 160px; font-family: var(--text); font-weight: 900; color: #ededed; white-space: nowrap; }
+  #s-open .l1 { top: 360px; font-size: 104px; }
+  #s-open .l2 { top: 500px; font-size: 104px; }
+  #s-open .l2 b { color: #161616; background: var(--signal); padding: 0 18px; }
+  #s-open .l3 { top: 660px; font-size: 46px; font-weight: 500; color: #bdbdbd; }
+
+  /* 字标 */
+  #s-mark .wrap { position: absolute; left: 160px; top: 250px; }
+  #s-mark .seal { width: 96px; height: 96px; font-size: 58px; }
+  #s-mark .wm { font-size: 210px; font-weight: 800; font-stretch: 125%; line-height: .86; letter-spacing: -.01em; margin-top: 40px; white-space: nowrap; }
+  #s-mark .wm2 { font-family: var(--text); font-size: 120px; font-weight: 900; margin-top: 22px; white-space: nowrap; }
+  #s-mark .wm2 small { font-family: var(--ui); font-size: 120px; font-weight: 800; font-stretch: 125%; color: transparent; -webkit-text-stroke: 3px var(--ink); margin-left: 34px; }
+  #s-mark .marker { font-family: var(--text); font-size: 44px; margin-top: 46px; }
+  #s-mark .facts { margin-top: 40px; }
+
+  /* 功能页：说明在一侧，真实画面在另一侧 */
+  .feat .cap { position: absolute; top: 200px; width: 500px; }
+  .feat .no { font-size: 230px; font-weight: 800; font-stretch: 125%; line-height: .8; color: transparent; -webkit-text-stroke: 3px var(--ink); }
+  .feat .no .fill { position: absolute; left: 0; top: 0; color: var(--ink); -webkit-text-stroke: 0; }
+  .feat .cap .eyebrow { margin-top: 40px; display: block; }
+  .feat h2 { font-family: var(--text); font-size: 76px; font-weight: 900; margin-top: 10px; line-height: 1.15; }
+  .feat .say { font-family: var(--text); font-size: 34px; line-height: 1.6; margin-top: 28px; color: var(--ink); }
+  .feat .say b { background: linear-gradient(transparent 58%, rgba(255,250,0,.85) 58%); font-weight: 700; }
+  .feat .facts { margin-top: 30px; font-size: 24px; row-gap: 10px; }
+  .shot { position: absolute; width: 1200px; height: 675px; }
+  .shot .shadow { position: absolute; left: 22px; top: 22px; right: -22px; bottom: -22px; background: var(--hatch); }
+  .shot .win { position: absolute; inset: 0; overflow: hidden; background: #fff; border: 2px solid var(--ink);
+               clip-path: polygon(48px 0, 100% 0, 100% calc(100% - 48px), calc(100% - 48px) 100%, 0 100%, 0 48px); }
+  .shot img { position: absolute; left: 0; top: 0; width: 1600px; height: 900px; transform-origin: 0 0; }
+  .shot .plate { position: absolute; left: -2px; bottom: -64px; background: var(--ink); color: #fff; font-size: 24px; font-weight: 600;
+                 padding: 10px 36px 10px 20px; clip-path: polygon(0 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%); }
+
+  /* 整屏画面 + 底部字幕条 */
+  .full img.bg { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; }
+  .full .bar { position: absolute; left: 0; bottom: 92px; display: flex; align-items: stretch; background: #161616; color: #ededed;
+               clip-path: polygon(0 0, 100% 0, 100% calc(100% - 22px), calc(100% - 22px) 100%, 0 100%); }
+  .full .bar .k { background: var(--signal); color: #161616; font-size: 34px; font-weight: 800; font-stretch: 112%; padding: 22px 30px; display: grid; place-items: center; }
+  .full .bar .v { padding: 18px 70px 18px 34px; }
+  .full .bar .v b { display: block; font-family: var(--text); font-size: 48px; font-weight: 900; }
+  .full .bar .v span { display: block; font-family: var(--text); font-size: 26px; color: #bdbdbd; margin-top: 4px; }
+
+  /* 还有 */
+  #s-more .head { position: absolute; left: 120px; top: 400px; width: 440px; }
+  #s-more .head h2 { font-family: var(--text); font-size: 96px; font-weight: 900; margin-top: 8px; }
+  #s-more .head .say { font-family: var(--text); font-size: 32px; line-height: 1.6; margin-top: 20px; }
+  .tile { position: absolute; width: 620px; height: 349px; }
+  .tile .win { position: absolute; inset: 0; overflow: hidden; border: 2px solid var(--ink); background: #fff;
+               clip-path: polygon(0 0, 100% 0, 100% calc(100% - 26px), calc(100% - 26px) 100%, 0 100%); }
+  .tile img { width: 1600px; height: 900px; transform: scale(.3875); transform-origin: 0 0; }
+  .tile .lab { position: absolute; left: 0; top: -54px; font-family: var(--text); font-size: 32px; font-weight: 900; display: flex; gap: 14px; align-items: baseline; }
+  .tile .lab em { font-style: normal; font-family: var(--ui); font-size: 22px; font-weight: 600; font-stretch: 112%; background: var(--ink); color: #fff; padding: 0 18px 0 10px;
+                  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%); }
+
+  /* 结尾 */
+  #s-end .wrap { position: absolute; left: 160px; top: 200px; }
+  #s-end .seal { width: 80px; height: 80px; font-size: 48px; vertical-align: middle; }
+  #s-end .name { display: inline-block; vertical-align: middle; margin-left: 30px; font-size: 120px; font-weight: 800; font-stretch: 125%; line-height: 1; }
+  #s-end .zh { font-family: var(--text); font-size: 96px; font-weight: 900; margin-top: 26px; }
+  #s-end ul { list-style: none; margin-top: 56px; }
+  #s-end li { font-family: var(--text); font-size: 38px; padding: 18px 0; border-top: 2px solid var(--ink); display: flex; gap: 28px; align-items: baseline; width: 1080px; }
+  #s-end li:last-child { border-bottom: 2px solid var(--ink); }
+  #s-end li .fig { font-family: var(--ui); font-size: 24px; font-weight: 700; color: var(--ink-2); width: 60px; }
+  #s-end .cta { position: absolute; right: 160px; bottom: 150px; text-align: right; }
+  #s-end .cta .btn { display: inline-block; background: var(--ink); color: #fff; font-family: var(--text); font-size: 40px; font-weight: 800; padding: 22px 70px 22px 40px;
+                     clip-path: polygon(0 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%); }
+  #s-end .cta .btn.on { background: var(--signal); color: var(--ink); }
+  #s-end .cta p { font-size: 24px; font-stretch: 112%; color: var(--ink-2); margin-top: 18px; letter-spacing: .04em; }
+  #s-end .credit { position: absolute; left: 160px; bottom: 52px; font-size: 18px; font-stretch: 100%; color: var(--ink-2); letter-spacing: .02em; }
+
+  /* 快门：换场时的一扇斜切墨块 */
+  #shutter { position: absolute; inset: -20px; background: #161616; z-index: 50; }
+  #shutter i { position: absolute; top: 0; bottom: 0; width: 40px; right: -40px; background: var(--signal); }
+</style>
+</head>
+<body>
+  <div class="layer" id="s-open">
+    <div class="tri" id="openTri" style="top:0"><i></i><i></i><i></i></div>
+    <span class="eyebrow" id="openEb">AI RADAR / 2026</span>
+    <div class="big l1" id="openL1">不用再刷信息流</div>
+    <div class="big l2" id="openL2">每天 <b>5 分钟</b></div>
+    <div class="big l3" id="openL3">读完一份已经替你筛过、判断过的 AI 情报</div>
+  </div>
+
+  <div class="layer contours" id="s-mark">
+    <div class="tri" style="top:0"><i></i><i></i><i></i></div>
+    <div class="wrap">
+      <span class="seal" id="markSeal">R</span>
+      <div class="wm" id="markWm">AI RADAR</div>
+      <div class="wm2" id="markWm2">情报台<small>DESK</small></div>
+      <div><span class="marker" id="markMarker">每天替你读 AI 圈的桌面应用</span></div>
+      <div class="facts" id="markFacts"><span>17 个数据源</span><span>一次采集不到 1 分钟</span><span>采集不花 token</span></div>
+    </div>
+  </div>
+
+  <div class="layer contours feat" id="s-today">
+    <div class="cap" style="left:110px">
+      <div class="no" style="position:relative">01<span class="fill" id="todayFill">01</span></div>
+      <span class="eyebrow">Daily Brief</span>
+      <h2>今日简报</h2>
+      <p class="say">开头<b>一句话</b>说清今天最实质的变化，再给<b>值得点开的 3 件事</b>，每条附链接。</p>
+      <div class="facts"><span>简报存成 Markdown</span><span>可整篇译成英文</span></div>
+    </div>
+    <div class="shot" id="todayShot" style="left:660px;top:170px"><div class="shadow"></div><div class="win"><img id="todayImg" /></div><div class="plate">简报正文里的概念词，点一下就有解释</div></div>
+  </div>
+
+  <div class="layer contours feat" id="s-radar">
+    <div class="shot" id="radarShot" style="left:90px;top:170px"><div class="shadow"></div><div class="win"><img id="radarImg" /></div><div class="plate">采集器原样输出，没有任何判断</div></div>
+    <div class="cap" style="left:1420px;width:440px">
+      <div class="no" style="position:relative">02<span class="fill" id="radarFill">02</span></div>
+      <span class="eyebrow">Raw Radar</span>
+      <h2>原始雷达</h2>
+      <p class="say"><b>10 个栏目</b>：前沿、新星、模型、新闻、论文、HN、社区……</p>
+      <div class="facts"><span>25 个新项目</span><span>52 个新模型</span><span>42 条新闻</span><span>14 篇论文</span></div>
+    </div>
+  </div>
+
+  <div class="layer contours feat" id="s-needs">
+    <div class="cap" style="left:110px">
+      <div class="no" style="position:relative">03<span class="fill" id="needsFill">03</span></div>
+      <span class="eyebrow">Needs</span>
+      <h2>需求雷达</h2>
+      <p class="say">写下目标、预算、设备和底线，按条件筛项目，<b>对不上的地方直接写出来</b>。</p>
+      <div class="facts"><span>有效</span><span>太复杂</span><span>太贵</span><span>不相关</span></div>
+    </div>
+    <div class="shot" id="needsShot" style="left:660px;top:170px"><div class="shadow"></div><div class="win"><img id="needsImg" /></div><div class="plate">每次反馈都会改下一次的排序</div></div>
+  </div>
+
+  <div class="layer full" id="s-search">
+    <img class="bg" id="searchImg" />
+    <div class="bar" id="searchBar"><div class="k">Ctrl K</div><div class="v"><b>搜全部记录</b><span>跨所有天的项目、模型、新闻、论文和简报正文</span></div></div>
+  </div>
+
+  <div class="layer full" id="s-theme">
+    <img class="bg" id="themeImg" />
+    <div class="bar" id="themeBar"><div class="k">05</div><div class="v"><b>浅色、深色两套界面</b><span>默认跟随系统，点一下就切换</span></div></div>
+  </div>
+
+  <div class="layer contours" id="s-more">
+    <div class="head" id="moreHead"><span class="eyebrow">And more</span><h2>还有</h2><p class="say">提示词模板、概念词典、<br>插件目录、带记忆的对话</p></div>
+    <div class="tile" id="t1" style="left:600px;top:150px"><div class="lab"><em>09</em>模板库</div><div class="win"><img id="img-tasks" /></div></div>
+    <div class="tile" id="t2" style="left:1250px;top:150px"><div class="lab"><em>10</em>概念词典</div><div class="win"><img id="img-concepts" /></div></div>
+    <div class="tile" id="t3" style="left:600px;top:610px"><div class="lab"><em>07</em>扩展能力</div><div class="win"><img id="img-ext" /></div></div>
+    <div class="tile" id="t4" style="left:1250px;top:610px"><div class="lab"><em>08</em>对话</div><div class="win"><img id="img-chat" /></div></div>
+  </div>
+
+  <div class="layer contours" id="s-end">
+    <div class="tri" style="top:0"><i></i><i></i><i></i></div>
+    <div class="wrap">
+      <span class="seal">R</span><span class="name" id="endName">AI RADAR</span>
+      <div class="zh" id="endZh">AI 情报台</div>
+      <ul id="endList">
+        <li><span class="fig">01</span>采集原料不花 token，每天定时自动跑</li>
+        <li><span class="fig">02</span>有模型 key 就直接写简报；没有，也能交给 agent 写</li>
+        <li><span class="fig">03</span>数据都留在你自己的文件夹里</li>
+      </ul>
+    </div>
+    <div class="cta" id="endCta"><span class="btn" id="endBtn">打开 AI 情报台</span><p>WINDOWS 桌面应用 / 浅色与深色</p></div>
+    <!-- 背景音乐的署名（CC BY 4.0 要求），用作者给的原文 -->
+    <p class="credit" id="endCredit">Music: "Getting it Done" Kevin MacLeod (incompetech.com) / Licensed under Creative Commons: By Attribution 4.0 License / http://creativecommons.org/licenses/by/4.0/</p>
+  </div>
+
+  <div id="shutter" style="display:none"><i></i></div>
+
+<script src="compose.js"></script>
+</body>
+</html>

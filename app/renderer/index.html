@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<!-- 变体：黄 / 中性纸 / 标准切角 / 等高线 / 紧凑 / 克制动效（yellow / neutral / standard / contours / compact / calm）
+     主视觉：左栏今天的日期大数字 + 真实采集读数；页面类型：今日简报为阅读页，其余为阅读与工作列表 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self';" />
+  <title>AI 情报台</title>
+  <script src="theme.js"></script>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="views.css" />
+</head>
+<body class="contours">
+  <header class="cmdbar">
+    <div class="brand"><span class="seal" aria-hidden="true">R</span><span class="brand-en">AI RADAR</span><span class="brand-zh">情报台</span></div>
+    <div class="cmd-where" id="cmdWhere" aria-live="polite"></div>
+    <div class="cmd-util">
+      <button class="cmd-btn" id="btnSearch" type="button" title="搜索全部记录（Ctrl K 或 /）"><span>搜索全部记录</span><kbd>Ctrl K</kbd></button>
+      <button class="cmd-btn" id="btnTheme" type="button" aria-pressed="false" title="切换深浅色">深色</button>
+    </div>
+  </header>
+  <div class="tri" aria-hidden="true"><i></i><i></i><i></i></div>
+
+  <div class="shell">
+    <aside class="rail">
+      <header class="day">
+        <div class="day-num" id="dayNum">—</div>
+        <div class="day-meta">
+          <div class="day-month" id="dayMonth">—</div>
+          <div class="day-week" id="dayWeek">—</div>
+        </div>
+      </header>
+
+      <div class="status" id="status">正在读取…</div>
+
+      <button class="btn primary wide collect" id="btnCollect" type="button">开始采集</button>
+      <div class="collect-note" id="collectNote">抓取需要 30–60 秒，不花 token。</div>
+
+      <pre class="log" id="log" hidden></pre>
+
+      <nav class="nav" id="nav" aria-label="主导航">
+        <p class="nav-group"><span>Read</span>阅读</p>
+        <button type="button" class="nav-item is-on" data-view="today" aria-current="page"><span class="no">01</span><span class="zh">今日简报</span><span class="en">Today</span></button>
+        <button type="button" class="nav-item" data-view="weekly"><span class="no">02</span><span class="zh">周报</span><span class="en">Weekly</span></button>
+        <button type="button" class="nav-item" data-view="history"><span class="no">03</span><span class="zh">历史</span><span class="n" data-count="history"></span><span class="en">History</span></button>
+        <button type="button" class="nav-item" data-view="saved"><span class="no">04</span><span class="zh">收藏</span><span class="n" data-count="saved"></span><span class="en">Saved</span></button>
+
+        <p class="nav-group"><span>Find</span>发现</p>
+        <button type="button" class="nav-item" data-view="needs"><span class="no">05</span><span class="zh">需求雷达</span><span class="en">Needs</span></button>
+        <button type="button" class="nav-item" data-view="radar"><span class="no">06</span><span class="zh">原始雷达</span><span class="n" data-count="radar"></span><span class="en">Radar</span></button>
+        <button type="button" class="nav-item" data-view="ext"><span class="no">07</span><span class="zh">扩展能力</span><span class="en">Plugins</span></button>
+
+        <p class="nav-group"><span>Tools</span>工具</p>
+        <button type="button" class="nav-item" data-view="chat"><span class="no">08</span><span class="zh">对话</span><span class="en">Chat</span></button>
+        <button type="button" class="nav-item" data-view="tasks"><span class="no">09</span><span class="zh">模板库</span><span class="en">Templates</span></button>
+        <button type="button" class="nav-item" data-view="concepts"><span class="no">10</span><span class="zh">概念词典</span><span class="en">Glossary</span></button>
+        <button type="button" class="nav-item" data-view="agents"><span class="no">11</span><span class="zh">安装 agent</span><span class="en">Agents</span></button>
+
+        <button type="button" class="nav-item nav-settings" data-view="settings"><span class="no">12</span><span class="zh">设置</span><span class="en">Settings</span></button>
+      </nav>
+
+      <footer class="rail-foot" id="railFoot"></footer>
+    </aside>
+
+    <main class="main" id="main">
+      <div class="progress" aria-hidden="true"><i id="prog"></i></div>
+      <div class="view" id="view"></div>
+    </main>
+
+    <aside class="drawer" id="drawer" hidden></aside>
+  </div>
+
+  <div class="spot" id="spot" hidden>
+    <div class="spot-box" role="dialog" aria-label="搜索全部记录">
+      <label class="spot-field"><input id="spotInput" type="text" placeholder="搜项目、模型、新闻、论文、简报…… 空格分隔多个词" spellcheck="false" autocomplete="off" /></label>
+      <div class="spot-meta" id="spotMeta"></div>
+      <div class="spot-list" id="spotList"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <div class="termcard" id="termcard" hidden></div>
+  <div class="onboard" id="onboard" hidden></div>
+
+  <script src="markdown.js"></script>
+  <script src="app.js"></script>
+  <aside class="sdoc" id="sdoc" hidden><div class="sdoc-box" id="sdocBox"></div></aside>
+  <aside class="sdoc" id="ucard" hidden><div class="sdoc-box"></div></aside>
+</body>
+</html>

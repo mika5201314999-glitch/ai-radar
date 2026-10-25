@@ -1,0 +1,30 @@
+# ---- 个人设置与使用记录：只存在本机，不进仓库 ----
+# 设置（以后填的 API key 也存在这里）
+app/config.json
+# 需求画像、收藏、已读、反馈、追踪名单、各种缓存和基线
+state/
+# 对话记录
+chats/
+# 每天的采集原件、合并档案、写好的简报和周报
+data/
+inbox/
+digests/
+# 日志
+logs/
+app/last-run.log
+
+# ---- 构建产物与依赖：拉下来后自己装、自己打包 ----
+app/node_modules/
+bin/
+
+# ---- 本机备份和调试文件 ----
+app/backups/
+app/_*.mjs
+/_*.json
+/_*.txt
+app/shot.png
+
+# ---- 宣传片的中间文件（都能用 promo/src 里的脚本重新生成） ----
+promo/build/
+promo/audio/sfx.wav
+promo/AI情报台-宣传短片-仅音效.mp4

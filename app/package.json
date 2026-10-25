@@ -1,0 +1,15 @@
+{
+  "name": "ai-radar",
+  "productName": "AI 情报台",
+  "version": "1.0.0",
+  "private": true,
+  "description": "每天早上的 AI / GitHub 情报台：采集 + 阅读 + 简报生成",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "electron": "^45.0.0",
+    "resedit": "^3.1.0"
+  }
+}

@@ -1,0 +1,352 @@
+{
+  "checked_at": "2026-10-25",
+  "note": "主流 agent 的安装入口。命令在 2026-10-25 用 npm registry / PyPI / 官方站点核实过；标「未核实」的以官网为准。这张表是活文件，直接改 agents.json 就行，改完重开应用即生效。",
+  "groups": [
+    { "key": "cli", "label": "命令行 agent", "note": "装在终端里，配你现有的编辑器；最适合跑脚本、批处理、自动化" },
+    { "key": "ide", "label": "独立编辑器 / 客户端", "note": "下载安装包，界面里直接聊；能力跟 IDE 深度绑定" },
+    { "key": "extension", "label": "VS Code 系插件", "note": "在现有 VS Code 里加一栏，不换编辑器" },
+    { "key": "local", "label": "本地模型运行时", "note": "不是 agent 本身，是给它供货的本地推理；你的 4060 8GB 按 ≤7B Q4 算" }
+  ],
+  "agents": [
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "vendor": "Anthropic",
+      "group": "cli",
+      "skill_group": "claude",
+      "what": "终端里的编码 agent，SKILL.md 那套技能的源头；子 agent、hooks、MCP 都齐",
+      "need": "Claude 订阅或 API key",
+      "home": "https://claude.com/product/claude-code",
+      "verified": "npm 2026-10-25 · 2.1.310",
+      "installs": [
+        { "label": "npm（全平台，需 Node 18+）", "cmd": "npm i -g @anthropic-ai/claude-code" },
+        { "label": "启动", "cmd": "claude" }
+      ]
+    },
+    {
+      "id": "codex",
+      "name": "Codex CLI",
+      "vendor": "OpenAI",
+      "group": "cli",
+      "skill_group": "codex",
+      "what": "OpenAI 的终端 agent，读 AGENTS.md；sandbox 默认较严，适合让它自己跑测试",
+      "need": "ChatGPT 账号或 API key",
+      "home": "https://developers.openai.com/codex/cli",
+      "verified": "npm 2026-10-25 · 0.164.0",
+      "installs": [
+        { "label": "npm（全平台）", "cmd": "npm i -g @openai/codex" },
+        { "label": "启动", "cmd": "codex" }
+      ]
+    },
+    {
+      "id": "gemini-cli",
+      "name": "Gemini CLI",
+      "vendor": "Google",
+      "group": "cli",
+      "skill_group": "gemini",
+      "what": "开源终端 agent，免费额度大方；读 GEMINI.md，支持 extensions 扩展",
+      "need": "Google 账号（有免费额度）",
+      "home": "https://github.com/google-gemini/gemini-cli",
+      "verified": "npm 2026-10-25 · 0.65.0",
+      "installs": [
+        { "label": "npm（全平台）", "cmd": "npm i -g @google/gemini-cli" },
+        { "label": "启动", "cmd": "gemini" }
+      ]
+    },
+    {
+      "id": "copilot-cli",
+      "name": "GitHub Copilot CLI",
+      "vendor": "GitHub",
+      "group": "cli",
+      "skill_group": "copilot",
+      "what": "Copilot 的命令行形态，能直接改仓库、跑 PR 流程",
+      "need": "Copilot 订阅",
+      "home": "https://github.com/features/copilot/cli",
+      "verified": "npm 2026-10-25 · 1.0.103",
+      "installs": [
+        { "label": "npm（全平台）", "cmd": "npm i -g @github/copilot" },
+        { "label": "启动", "cmd": "copilot" }
+      ]
+    },
+    {
+      "id": "qwen-code",
+      "name": "Qwen Code",
+      "vendor": "阿里通义",
+      "group": "cli",
+      "skill_group": "generic",
+      "what": "Gemini CLI 的分支改造版，接 Qwen 系列；国内网络更友好",
+      "need": "通义 API key 或兼容 OpenAI 的端点",
+      "home": "https://qwenlm.github.io/qwen-code-docs/",
+      "verified": "npm 2026-10-25 · 0.26.1",
+      "installs": [
+        { "label": "npm（全平台）", "cmd": "npm i -g @qwen-code/qwen-code" },
+        { "label": "启动", "cmd": "qwen" }
+      ]
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "vendor": "SST",
+      "group": "cli",
+      "skill_group": "editor",
+      "what": "终端 TUI，提供商可换（OpenAI / Anthropic / 本地），配置透明的多模型 agent",
+      "need": "任一家模型 key",
+      "home": "https://opencode.ai",
+      "verified": "npm 2026-10-25 · 1.19.4",
+      "installs": [
+        { "label": "npm（全平台）", "cmd": "npm i -g opencode-ai" },
+        { "label": "启动", "cmd": "opencode" }
+      ]
+    },
+    {
+      "id": "crush",
+      "name": "Crush",
+      "vendor": "Charm",
+      "group": "cli",
+      "skill_group": "editor",
+      "what": "Charm 出的终端 agent，界面做得漂亮，配置项少，适合先试手感",
+      "need": "任一家模型 key",
+      "home": "https://github.com/charmbracelet/crush",
+      "verified": "npm 2026-10-25 · 0.98.2",
+      "installs": [
+        { "label": "npm（全平台）", "cmd": "npm i -g @charmland/crush" },
+        { "label": "启动", "cmd": "crush" }
+      ]
+    },
+    {
+      "id": "amp",
+      "name": "Amp",
+      "vendor": "Sourcegraph",
+      "group": "cli",
+      "skill_group": "generic",
+      "what": "Sourcegraph 的 agent，强在大仓库检索；按 token 计费，烧钱也快",
+      "need": "账号 + 付费额度",
+      "home": "https://ampcode.com",
+      "verified": "npm 2026-10-25 · 0.0.1792",
+      "installs": [
+        { "label": "npm（全平台）", "cmd": "npm i -g @sourcegraph/amp" },
+        { "label": "启动", "cmd": "amp" }
+      ]
+    },
+    {
+      "id": "auggie",
+      "name": "Auggie",
+      "vendor": "Augment Code",
+      "group": "cli",
+      "skill_group": "generic",
+      "what": "Augment 的 CLI，强项是整个仓库的上下文索引",
+      "need": "Augment 账号",
+      "home": "https://www.augmentcode.com",
+      "verified": "npm 2026-10-25 · 0.36.0",
+      "installs": [
+        { "label": "npm（全平台）", "cmd": "npm i -g @augmentcode/auggie" },
+        { "label": "启动", "cmd": "auggie" }
+      ]
+    },
+    {
+      "id": "continue-cli",
+      "name": "Continue CLI",
+      "vendor": "Continue",
+      "group": "cli",
+      "skill_group": "editor",
+      "what": "开源，模型随便换，可接本地 Ollama；和 Continue 插件共用配置",
+      "need": "任一家模型 key，或本地模型",
+      "home": "https://continue.dev",
+      "verified": "npm 2026-10-25 · 1.5.47",
+      "installs": [
+        { "label": "npm（全平台）", "cmd": "npm i -g @continuedev/cli" },
+        { "label": "启动", "cmd": "cn" }
+      ]
+    },
+    {
+      "id": "aider",
+      "name": "Aider",
+      "vendor": "开源",
+      "group": "cli",
+      "skill_group": "editor",
+      "what": "最老的 git-native 编码 agent，每轮自动提交；对模型没有绑定",
+      "need": "任一家模型 key",
+      "home": "https://aider.chat",
+      "verified": "PyPI 2026-10-25 · 0.86.2",
+      "installs": [
+        { "label": "需要 Python 3.9+（本机目前没装 Python）", "cmd": "python -m pip install aider-install && aider-install" },
+        { "label": "启动", "cmd": "aider" }
+      ]
+    },
+    {
+      "id": "goose",
+      "name": "Goose",
+      "vendor": "Block",
+      "group": "cli",
+      "skill_group": "editor",
+      "what": "Block 开源的本地 agent，扩展（MCP）生态走得早；桌面和 CLI 两套壳",
+      "need": "任一家模型 key",
+      "home": "https://block.github.io/goose",
+      "verified": "官网 2026-10-25（未核实版本号）",
+      "installs": [
+        { "label": "Windows / macOS：下安装包", "cmd": "https://block.github.io/goose/docs/getting-started/installation" },
+        { "label": "macOS Homebrew", "cmd": "brew install block-goose-cli" }
+      ]
+    },
+    {
+      "id": "kilo-cli",
+      "name": "Kilo CLI",
+      "vendor": "Kilo",
+      "group": "cli",
+      "skill_group": "editor",
+      "what": "Kilo Code 的命令行形态，和它的 VS Code 插件共用技能与规则",
+      "need": "任一家模型 key",
+      "home": "https://kilocode.ai",
+      "verified": "npm 2026-10-25 · 7.8.17",
+      "installs": [
+        { "label": "npm（全平台）", "cmd": "npm i -g @kilocode/cli" },
+        { "label": "启动", "cmd": "kilo" }
+      ]
+    },
+    {
+      "id": "dsh",
+      "name": "DSH（DeepSeek Harness）",
+      "vendor": "DeepSeek",
+      "group": "cli",
+      "skill_group": "deepseek",
+      "what": "你正在用的这个就是桌面版；headless 形态可以进 CI 或别的壳",
+      "need": "DeepSeek API key（或已在用的桌面版）",
+      "home": "https://api-docs.deepseek.com",
+      "verified": "npm 2026-10-25 · headless 0.0.1-rc.1",
+      "installs": [
+        { "label": "headless（无界面，进流水线用）", "cmd": "npm i -g @deepseek-ai/dsh-headless" },
+        { "label": "桌面版：已装在这台机器上", "cmd": "E:\\deepseek harness\\DSH Desktop\\DSH Desktop.exe" }
+      ]
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "vendor": "Anysphere",
+      "group": "ide",
+      "skill_group": "cursor",
+      "what": "VS Code 分支，agent 面板 + Tab 补全，最主流的付费编码 IDE",
+      "need": "订阅（有免费额度）",
+      "home": "https://cursor.com/downloads",
+      "verified": "官网 2026-10-25（下载页可直连）",
+      "installs": [
+        { "label": "Windows / macOS / Linux 安装包", "cmd": "https://cursor.com/downloads" }
+      ]
+    },
+    {
+      "id": "windsurf",
+      "name": "Windsurf",
+      "vendor": "Windsurf",
+      "group": "ide",
+      "skill_group": "editor",
+      "what": "另一个 VS Code 分支，Cascade agent 主打自动跨文件改",
+      "need": "订阅（有免费额度）",
+      "home": "https://windsurf.com/download",
+      "verified": "官网 2026-10-25",
+      "installs": [
+        { "label": "安装包", "cmd": "https://windsurf.com/download" }
+      ]
+    },
+    {
+      "id": "zed",
+      "name": "Zed",
+      "vendor": "Zed Industries",
+      "group": "ide",
+      "skill_group": "editor",
+      "what": "Rust 写的编辑器，自带 agent panel；快，但 Windows 支持较新",
+      "need": "任一家模型 key",
+      "home": "https://zed.dev/download",
+      "verified": "官网 2026-10-25",
+      "installs": [
+        { "label": "安装包", "cmd": "https://zed.dev/download" }
+      ]
+    },
+    {
+      "id": "trae",
+      "name": "Trae",
+      "vendor": "字节跳动",
+      "group": "ide",
+      "skill_group": "editor",
+      "what": "国内可直连的 AI IDE，配置少，适合不想折腾网络的时候",
+      "need": "账号（有免费额度）",
+      "home": "https://www.trae.ai",
+      "verified": "官网 2026-10-25",
+      "installs": [
+        { "label": "安装包", "cmd": "https://www.trae.ai" }
+      ]
+    },
+    {
+      "id": "cline",
+      "name": "Cline",
+      "vendor": "开源",
+      "group": "extension",
+      "skill_group": "editor",
+      "what": "VS Code 里最流行的开源 agent 插件，每步改动都要你点确认",
+      "need": "任一家模型 key",
+      "home": "https://cline.bot",
+      "verified": "npm 2026-10-25 · cline 3.0.73；扩展 ID 未核实",
+      "installs": [
+        { "label": "命令行装扩展", "cmd": "code --install-extension saoudrizwan.claude-dev" },
+        { "label": "或在 VS Code 市场搜 Cline", "cmd": "https://marketplace.visualstudio.com/search?term=cline" }
+      ]
+    },
+    {
+      "id": "roo-code",
+      "name": "Roo Code",
+      "vendor": "开源",
+      "group": "extension",
+      "skill_group": "editor",
+      "what": "Cline 的分支，多了多种 mode（架构/调试/文档各一套提示）",
+      "need": "任一家模型 key",
+      "home": "https://roocode.com",
+      "verified": "官网 2026-10-25；扩展 ID 未核实",
+      "installs": [
+        { "label": "命令行装扩展", "cmd": "code --install-extension RooVeterinaryInc.roo-cline" },
+        { "label": "或在市场搜 Roo Code", "cmd": "https://marketplace.visualstudio.com/search?term=roo%20code" }
+      ]
+    },
+    {
+      "id": "kilo-code",
+      "name": "Kilo Code",
+      "vendor": "Kilo",
+      "group": "extension",
+      "skill_group": "editor",
+      "what": "把 Cline + Roo 的能力合并，带记忆库和 orchestrator 模式",
+      "need": "任一家模型 key",
+      "home": "https://kilocode.ai",
+      "verified": "官网 2026-10-25；扩展 ID 未核实",
+      "installs": [
+        { "label": "命令行装扩展", "cmd": "code --install-extension kilocode.kilo-code" },
+        { "label": "或在市场搜 Kilo Code", "cmd": "https://marketplace.visualstudio.com/search?term=kilo%20code" }
+      ]
+    },
+    {
+      "id": "ollama",
+      "name": "Ollama",
+      "vendor": "开源",
+      "group": "local",
+      "skill_group": "generic",
+      "what": "最省事的本地模型运行时；agent 只要一个 OpenAI 兼容端点就能吃它",
+      "need": "你的 4060 8GB：按 ≤7B Q4 挑（约 4-5GB 显存）",
+      "home": "https://ollama.com/download",
+      "verified": "官网 2026-10-25",
+      "installs": [
+        { "label": "Windows 安装包", "cmd": "https://ollama.com/download" },
+        { "label": "装完拉一个模型", "cmd": "ollama run qwen3:8b" }
+      ]
+    },
+    {
+      "id": "lmstudio",
+      "name": "LM Studio",
+      "vendor": "Element Labs",
+      "group": "local",
+      "skill_group": "generic",
+      "what": "图形化本地模型客户端，带 OpenAI 兼容 server，适合先试再上 Ollama",
+      "need": "同上，8GB 显存按 Q4 选",
+      "home": "https://lmstudio.ai",
+      "verified": "官网 2026-10-25",
+      "installs": [
+        { "label": "Windows / macOS 安装包", "cmd": "https://lmstudio.ai" }
+      ]
+    }
+  ]
+}
