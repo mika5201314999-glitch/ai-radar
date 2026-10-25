@@ -115,13 +115,13 @@ window.addEventListener('unhandledrejection', (e) => {
 });
 
 let toastTimer = null;
-function toast(msg, bad = false) {
+function toast(msg, bad = false, ms = 0) {
   const t = $('#toast');
   t.textContent = msg;
   t.hidden = false;
   t.classList.toggle('bad', !!bad);
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, bad ? 6000 : 2600);
+  toastTimer = setTimeout(() => { t.hidden = true; }, ms || (bad ? 6000 : 2600));
 }
 
 /* ------------------------------------------------------------------ rail */
@@ -265,18 +265,20 @@ function updateBlock() {
   const u = S.update || {};
   const cur = `<span class="ef-state">当前 v${esc((S.state && S.state.appVersion) || u.current || '')}</span>`;
   const L = u.latest || {};
-  const notes = L.notes ? `<pre class="upd-notes">${esc(L.notes)}</pre>` : '';
+  const notes = L.notes ? `<div class="upd-notes">${esc(L.notes)}</div>` : '';
   const checked = u.checkedAt ? `<span class="hint keep" style="margin:0">上次检查 ${esc(shortTime(u.checkedAt))}</span>` : '';
   const btnCheck = '<button class="btn quiet" data-act="upd-check">检查更新</button>';
+  const j = u.justUpdated;
+  const just = j ? `<p class="notice" style="margin:0 0 10px">已从 v${esc(j.from)} 更新到 v${esc(j.to)}。${j.conflicts && j.conflicts.length ? `这些文件你改过，没有覆盖，新版另存在旁边的 .new 文件里，可以对照着合并：${esc(j.conflicts.join('、'))}` : '所有文件都换成了新版。'}</p>` : '';
   switch (u.state) {
     case 'disabled':
       return `<p class="upd-line">${cur} ${esc(u.reason || '这里不自动更新')}</p>`;
     case 'checking':
       return `<p class="upd-line">${cur} 正在检查…</p>`;
     case 'none':
-      return `<p class="upd-line">${cur} 已经是最新版本 ${checked}</p><p class="actions" style="margin-top:8px">${btnCheck}</p>`;
+      return `${just}<p class="upd-line">${cur} 已经是最新版本 ${checked}</p><p class="actions" style="margin-top:8px">${btnCheck}</p>`;
     case 'available':
-      return `<p class="upd-line">${cur} <span class="ef-state is-alert">新版本 v${esc(L.version)}</span> <span class="field-t">${L.size ? fmtMB(L.size) : ''}${L.date ? ' / ' + esc(L.date) : ''}</span></p>${notes}
+      return `${just}<p class="upd-line">${cur} <span class="ef-state is-alert">新版本 v${esc(L.version)}</span> <span class="field-t">${L.size ? fmtMB(L.size) : ''}${L.date ? ' / ' + esc(L.date) : ''}</span></p>${notes}
         <p class="actions" style="margin-top:8px"><button class="btn primary" data-act="upd-download">下载更新</button>${btnCheck}</p>`;
     case 'manual':
       return `<p class="upd-line">${cur} <span class="ef-state is-alert">新版本 v${esc(L.version)}</span></p><p class="notice">${esc(u.reason)}</p>`;
@@ -293,7 +295,7 @@ function updateBlock() {
     case 'error':
       return `<p class="upd-line">${cur} ${checked}</p><p class="notice">${esc(u.error || '出错了')}</p><p class="actions" style="margin-top:8px">${btnCheck}</p>`;
     default:
-      return `<p class="upd-line">${cur} ${checked}</p><p class="actions" style="margin-top:8px">${btnCheck}</p>`;
+      return `${just}<p class="upd-line">${cur} ${checked}</p><p class="actions" style="margin-top:8px">${btnCheck}</p>`;
   }
 }
 
@@ -320,7 +322,7 @@ async function updCheck() {
 
 async function updDownload() {
   const v = (S.update && S.update.latest && S.update.latest.version) || '';
-  jobStart('update', `正在下载更新 v${v}`, { en: 'Update', total: 100, live: true, stallAfter: 30, step: '连接更新源' });
+  jobStart('update', `正在下载更新 v${v}`, { en: 'Update', total: 100, percent: true, live: true, stallAfter: 30, step: '连接更新源' });
   const r = await api.updateDownload();
   if (r.ok) jobEnd('update', true, `下载好了，共 ${r.files} 个文件。点「重启并更新」换上新版`);
   else jobEnd('update', false, r.error || '下载失败');
@@ -4291,6 +4293,7 @@ api.onNav(({ view }) => setView(view));
 
 api.onUpdateStatus((st) => { S.update = st; paintUpdate(); });
 api.onUpdateProgress(({ received, total }) => {
+  if (S.update) { S.update.progress = { received, total }; paintUpdate(); }
   if (!jobRunning('update')) return;
   const pct = total ? Math.min(100, Math.round((received / total) * 100)) : 0;
   jobBeat('update', total ? `${fmtMB(received)} / ${fmtMB(total)}` : fmtMB(received), pct);
@@ -4324,8 +4327,8 @@ $('#btnUpdate').addEventListener('click', () => {
     const j = S.update && S.update.justUpdated;
     if (j) {
       toast(j.conflicts && j.conflicts.length
-        ? `已更新到 v${j.to}。这些文件你改过，没有覆盖，新版另存为 .new：${j.conflicts.join('、')}`
-        : `已更新到 v${j.to}。`);
+        ? `已更新到 v${j.to}。这些文件你改过，没有覆盖，新版另存为 .new：${j.conflicts.join('、')}（设置的「更新」一栏里也写着）`
+        : `已更新到 v${j.to}。`, false, 9000);
     }
   } catch {}
 })();

@@ -1,7 +1,8 @@
 'use strict';
 /* 任务进度面板：右下角一张卡片，告诉用户「还在动」还是「可能卡住了」。
  *
- *   jobStart(id, title, { en, total, expect, stallAfter, live, step })
+ *   jobStart(id, title, { en, total, expect, stallAfter, live, step, percent })
+ *     percent     进度显示成百分比（下载这类按字节算的）而不是「k / n 步」
  *     total       有总步数就显示真实进度（例如采集 12 步），没有就显示来回走的进度条
  *     expect      一般要多少秒；超过两倍就提示「比平时慢」
  *     live        任务会不断报告进展（采集日志、流式回答）；stallAfter 秒没新动静就提示「可能卡住了」
@@ -131,7 +132,10 @@
     e.step.textContent = j.step || '准备中…';
     const secs = ((j.endAt || now) - j.start) / 1000;
     const facts = [`已用 ${clock(secs)}`];
-    if (j.total) facts.push(`${j.state === 'ok' ? j.total : (j.done || 0)} / ${j.total} 步`);
+    if (j.total) {
+      const done = j.state === 'ok' ? j.total : (j.done || 0);
+      facts.push(j.percent ? `${Math.round((done / j.total) * 100)}%` : `${done} / ${j.total} 步`);
+    }
     facts.push(st.beat);
     const html = facts.map((f, i) => `<li${i === facts.length - 1 ? ' class="job-beat"' : ''}></li>`).join('');
     if (e.facts.children.length !== facts.length) e.facts.innerHTML = html;
@@ -198,7 +202,7 @@
     if (old) remove(old);
     const j = {
       id, title, en: opts.en || 'Task', total: opts.total || 0, done: 0, step: opts.step || '',
-      expect: opts.expect || 0, stallAfter: opts.stallAfter || 30, live: !!opts.live,
+      expect: opts.expect || 0, stallAfter: opts.stallAfter || 30, live: !!opts.live, percent: !!opts.percent,
       start: now, beat: now, state: 'run', endAt: 0, el: null,
     };
     JOBS.set(id, j);
