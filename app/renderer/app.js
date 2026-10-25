@@ -254,6 +254,86 @@ function enterBody(sel) {
   el.classList.add('is-entering');
 }
 
+/* ------------------------------------------------------------------ 更新 */
+/* 状态来自主进程（updater.js）：disabled / idle / checking / none / available / manual / downloading / ready / applying / applied / error */
+
+S.update = null;
+
+const fmtMB = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
+function updateBlock() {
+  const u = S.update || {};
+  const cur = `<span class="ef-state">当前 v${esc((S.state && S.state.appVersion) || u.current || '')}</span>`;
+  const L = u.latest || {};
+  const notes = L.notes ? `<pre class="upd-notes">${esc(L.notes)}</pre>` : '';
+  const checked = u.checkedAt ? `<span class="hint keep" style="margin:0">上次检查 ${esc(shortTime(u.checkedAt))}</span>` : '';
+  const btnCheck = '<button class="btn quiet" data-act="upd-check">检查更新</button>';
+  switch (u.state) {
+    case 'disabled':
+      return `<p class="upd-line">${cur} ${esc(u.reason || '这里不自动更新')}</p>`;
+    case 'checking':
+      return `<p class="upd-line">${cur} 正在检查…</p>`;
+    case 'none':
+      return `<p class="upd-line">${cur} 已经是最新版本 ${checked}</p><p class="actions" style="margin-top:8px">${btnCheck}</p>`;
+    case 'available':
+      return `<p class="upd-line">${cur} <span class="ef-state is-alert">新版本 v${esc(L.version)}</span> <span class="field-t">${L.size ? fmtMB(L.size) : ''}${L.date ? ' / ' + esc(L.date) : ''}</span></p>${notes}
+        <p class="actions" style="margin-top:8px"><button class="btn primary" data-act="upd-download">下载更新</button>${btnCheck}</p>`;
+    case 'manual':
+      return `<p class="upd-line">${cur} <span class="ef-state is-alert">新版本 v${esc(L.version)}</span></p><p class="notice">${esc(u.reason)}</p>`;
+    case 'downloading': {
+      const p = u.progress || {};
+      return `<p class="upd-line">${cur} 正在下载 v${esc(L.version)} … ${p.total ? Math.round((p.received / p.total) * 100) + '%' : ''}</p>`;
+    }
+    case 'ready':
+      return `<p class="upd-line">${cur} <span class="ef-state is-alert">v${esc(L.version || '')} 已下载好</span></p>${notes}
+        <p class="actions" style="margin-top:8px"><button class="btn primary" data-act="upd-apply">重启并更新</button></p>
+        <div class="hint keep">重启时只换程序代码和随附的模板、词典、提示词；你的设置、收藏、需求和每天的数据都不动。你改过的提示词或模板不会被覆盖，新版另存成 .new 文件。</div>`;
+    case 'applying':
+      return `<p class="upd-line">${cur} 正在换文件，马上重启…</p>`;
+    case 'error':
+      return `<p class="upd-line">${cur} ${checked}</p><p class="notice">${esc(u.error || '出错了')}</p><p class="actions" style="margin-top:8px">${btnCheck}</p>`;
+    default:
+      return `<p class="upd-line">${cur} ${checked}</p><p class="actions" style="margin-top:8px">${btnCheck}</p>`;
+  }
+}
+
+function paintUpdate() {
+  const box = document.getElementById('updBox');
+  if (box) box.innerHTML = updateBlock();
+  const b = $('#btnUpdate');
+  if (!b) return;
+  const u = S.update || {};
+  const show = u.state === 'available' || u.state === 'ready' || u.state === 'manual';
+  b.hidden = !show;
+  if (show) b.textContent = u.state === 'ready' ? '重启更新' : `新版本 v${(u.latest && u.latest.version) || ''}`;
+}
+
+async function updCheck() {
+  S.update = { ...(S.update || {}), state: 'checking' };
+  paintUpdate();
+  const r = await api.updateCheck();
+  S.update = r;
+  paintUpdate();
+  if (r.state === 'none') toast('已经是最新版本。');
+  else if (r.state === 'error') toast('检查更新失败：' + (r.error || ''), true);
+}
+
+async function updDownload() {
+  const v = (S.update && S.update.latest && S.update.latest.version) || '';
+  jobStart('update', `正在下载更新 v${v}`, { en: 'Update', total: 100, live: true, stallAfter: 30, step: '连接更新源' });
+  const r = await api.updateDownload();
+  if (r.ok) jobEnd('update', true, `下载好了，共 ${r.files} 个文件。点「重启并更新」换上新版`);
+  else jobEnd('update', false, r.error || '下载失败');
+  S.update = await api.updateStatus();
+  paintUpdate();
+}
+
+async function updApply() {
+  const r = await api.updateApply();
+  if (r.ok) toast(`正在换上 v${r.version} 并重启…`);
+  else { toast(r.error || '更新失败', true); S.update = await api.updateStatus(); paintUpdate(); }
+}
+
 /* 深浅色：没选过就跟随系统；选过就记住 */
 function currentTheme() {
   const t = document.documentElement.dataset.theme;
@@ -479,7 +559,7 @@ function rootPath(...parts) {
 function dshCommand(date) {
   return [
     `请读 ${rootPath('inbox', date + '.md')}（这是采集器原件），`,
-    `按 ${rootPath('prompts', 'daily.md')} 的要求写今天的简报：`,
+    `按 ${(S.state.paths && S.state.paths.dailyPrompt) || rootPath('prompts', 'daily.md')} 的要求写今天的简报：`,
     `需要时用 web_search 交叉核实，链接必须来自材料或你实际查到的页面，不要编数字。`,
     `写好后存进 ${rootPath('digests', date + '.md')}，并把这一天追加到 digests\\INDEX.md。`,
   ].join('');
@@ -1824,7 +1904,7 @@ function needFormInner() {
     ${row('goal', '具体一点', '做哪一步、要多快', '比如：把概念图批量转成可用的精灵图和法线贴图', true)}
     ${row('software', '常用软件', '顿号或逗号分开', '比如：Godot、Aseprite、Photoshop')}
     ${row('budget', '预算', '免费 / 多少钱以内', '比如：尽量免费，最多 30 美元')}
-    ${row('device', '设备条件', '显存、系统、有没有 Python', '比如：Windows 11、RTX 4060 8GB、没装 Python')}
+    ${row('device', '设备条件', '显存、系统、有没有 Python', '比如：Windows 11、8GB 显存独显、没装 Python')}
     ${row('difficulty', '能接受的操作难度', '一句话', '比如：能接受装软件，不想碰命令行', true)}
     ${row('tried', '试过但不满意的', '分号分开', '比如：某工具要付费；某网站不能批量', true)}
     <div class="needform-actions">
@@ -2436,6 +2516,13 @@ function renderSettings(host) {
             `<button class="segbtn${motionPref() === k ? ' on' : ''}" type="button" role="radio" aria-checked="${motionPref() === k}" data-act="motion" data-motion="${k}">${label}</button>`).join('')}
         </div>
         <div class="hint keep">换页、换标签页、切换深浅色时的过渡。「跟随系统」在 Windows 关掉「动画效果」时也会关掉这里。点一下立即生效，只记在这台电脑上。</div>
+      </div>
+    </div>
+    <div class="field" id="updField">
+      <label>更新</label>
+      <div class="control">
+        <div id="updBox">${updateBlock()}</div>
+        <label class="check" style="margin-top:10px"><input id="s-autoupd" type="checkbox" ${c.autoUpdateCheck !== false ? 'checked' : ''} /> 自动检查新版本（启动后和每 6 小时查一次，只提示，装不装由你决定）</label>
       </div>
     </div>
     <div class="field">
@@ -3861,6 +3948,9 @@ document.addEventListener('click', async (ev) => {
     }
     else if (a === 'needs-scan') runNeedsScan('');
     else if (a === 'motion') setMotion(act.dataset.motion);
+    else if (a === 'upd-check') void updCheck();
+    else if (a === 'upd-download') void updDownload();
+    else if (a === 'upd-apply') void updApply();
     else if (a === 'needs-seed') {
       api.needsSeed(false).then(() => { S.needs.payload = null; renderView(); toast('从追踪名单里挑了几条初始需求，可以点「编辑」改。'); }).catch((e) => toast(e.message || String(e), true));
     }
@@ -3922,6 +4012,7 @@ document.addEventListener('click', async (ev) => {
         summaryAll: $('#s-sum') ? $('#s-sum').checked : undefined,
         compact: $('#s-compact') ? $('#s-compact').checked : undefined,
         webSearch: $('#s-web') ? $('#s-web').checked : undefined,
+        autoUpdateCheck: $('#s-autoupd') ? $('#s-autoupd').checked : undefined,
         priceIn: $('#s-pin') ? $('#s-pin').value : undefined,
         priceOut: $('#s-pout') ? $('#s-pout').value : undefined,
       };
@@ -4198,6 +4289,17 @@ api.onTmplDelta(({ id, text }) => {
 
 api.onNav(({ view }) => setView(view));
 
+api.onUpdateStatus((st) => { S.update = st; paintUpdate(); });
+api.onUpdateProgress(({ received, total }) => {
+  if (!jobRunning('update')) return;
+  const pct = total ? Math.min(100, Math.round((received / total) * 100)) : 0;
+  jobBeat('update', total ? `${fmtMB(received)} / ${fmtMB(total)}` : fmtMB(received), pct);
+});
+$('#btnUpdate').addEventListener('click', () => {
+  setView('settings');
+  setTimeout(() => { const f = document.getElementById('updField'); if (f) f.scrollIntoView({ block: 'center' }); }, 350);
+});
+
 (async function boot() {
   try {
     await loadState();
@@ -4216,4 +4318,14 @@ api.onNav(({ view }) => setView(view));
   renderView();
   if (S.state?.collecting) { S.collecting = true; startCollectJob('采集已经在进行（应用是中途打开的）'); renderRail(); }
   if (onboardNeeded()) setTimeout(() => startOnboard(), 250);
+  try {
+    S.update = await api.updateStatus();
+    paintUpdate();
+    const j = S.update && S.update.justUpdated;
+    if (j) {
+      toast(j.conflicts && j.conflicts.length
+        ? `已更新到 v${j.to}。这些文件你改过，没有覆盖，新版另存为 .new：${j.conflicts.join('、')}`
+        : `已更新到 v${j.to}。`);
+    }
+  } catch {}
 })();

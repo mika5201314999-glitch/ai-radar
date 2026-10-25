@@ -5,7 +5,7 @@
     { "key": "cli", "label": "命令行 agent", "note": "装在终端里，配你现有的编辑器；最适合跑脚本、批处理、自动化" },
     { "key": "ide", "label": "独立编辑器 / 客户端", "note": "下载安装包，界面里直接聊；能力跟 IDE 深度绑定" },
     { "key": "extension", "label": "VS Code 系插件", "note": "在现有 VS Code 里加一栏，不换编辑器" },
-    { "key": "local", "label": "本地模型运行时", "note": "不是 agent 本身，是给它供货的本地推理；你的 4060 8GB 按 ≤7B Q4 算" }
+    { "key": "local", "label": "本地模型运行时", "note": "不是 agent 本身，是给它供货的本地推理；8GB 显存按 ≤7B Q4 算" }
   ],
   "agents": [
     {
@@ -326,7 +326,7 @@
       "group": "local",
       "skill_group": "generic",
       "what": "最省事的本地模型运行时；agent 只要一个 OpenAI 兼容端点就能吃它",
-      "need": "你的 4060 8GB：按 ≤7B Q4 挑（约 4-5GB 显存）",
+      "need": "8GB 显存的显卡：按 ≤7B Q4 挑（约 4-5GB 显存）",
       "home": "https://ollama.com/download",
       "verified": "官网 2026-10-25",
       "installs": [

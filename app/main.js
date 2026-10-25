@@ -13,6 +13,7 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const os = require('node:os');
 const { pathToFileURL } = require('node:url');
+const { createUpdater } = require('./updater');
 
 // 技能归类规则与采集器共用一份（ai-radar/skills.mjs），避免两边漂移。
 let SKILLS_LIB = null;
@@ -66,7 +67,15 @@ const DIR = {
   state: path.join(ROOT, 'state'),
   chats: path.join(ROOT, 'chats'),
   config: path.join(ROOT, 'app', 'config.json'),
+  local: path.join(ROOT, 'local'),
 };
+
+// 本机覆盖：local/ 下有同名文件就用它（个人化的提示词、模板、词典示例等）。
+// local/ 不进仓库，自动更新也不碰它；没有覆盖时用随应用发布的通用版本。
+function dataPath(...rel) {
+  const own = path.join(DIR.local, ...rel);
+  try { fs.accessSync(own); return own; } catch { return path.join(ROOT, ...rel); }
+}
 
 const DEFAULT_CONFIG = {
   baseUrl: 'https://api.deepseek.com',
@@ -84,6 +93,8 @@ const DEFAULT_CONFIG = {
   priceIn: 0,         // $/百万 token 输入价，填了才估算花费
   priceOut: 0,
   lastNotice: '',
+  autoUpdateCheck: true, // 启动后和每 6 小时查一次有没有新版本（只查，不自动装）
+  updateFeeds: [],       // 额外的更新源（例如国内镜像），排在 GitHub 前面先试
 };
 
 let win = null;
@@ -132,6 +143,7 @@ function publicConfig() {
     summaryAll: config.summaryAll === true,
     compact: config.compact !== false,
     webSearch: config.webSearch !== false,
+    autoUpdateCheck: config.autoUpdateCheck !== false,
     priceIn: Number(config.priceIn) || 0,
     priceOut: Number(config.priceOut) || 0,
     hasKey: !!key,
@@ -332,7 +344,7 @@ async function generateDigest(date) {
   const briefPath = path.join(DIR.inbox, `${date}.md`);
   const brief = await readText(briefPath);
   if (!brief) throw new Error(`没有 ${date} 的采集原件。先点左边的「开始采集」。`);
-  const sys = (await readText(path.join(DIR.prompts, 'app_digest.md'))) || '把原始信息整理成中文情报简报。';
+  const sys = (await readText(dataPath('prompts', 'app_digest.md'))) || '把原始信息整理成中文情报简报。';
   const prev = await recentDigests(date);
 
   const userMsg = [
@@ -402,11 +414,11 @@ function dataKey() {
     parts.push(`archive:${s.size}:${Math.round(s.mtimeMs)}`);
   } catch {}
   try {
-    const s = fs.statSync(path.join(ROOT, 'agents.json'));
+    const s = fs.statSync(dataPath('agents.json'));
     parts.push(`agents:${s.size}:${Math.round(s.mtimeMs)}`);
   } catch {}
   try {
-    const s = fs.statSync(path.join(ROOT, 'concepts.json'));
+    const s = fs.statSync(dataPath('concepts.json'));
     parts.push(`concepts:${s.size}:${Math.round(s.mtimeMs)}`);
   } catch {}
   try {
@@ -514,7 +526,7 @@ async function buildIndex() {
 
   // agent 安装表也进索引：搜 "claude code" 能直接找到装法和官网
   try {
-    const reg = await readJSON(path.join(ROOT, 'agents.json'), null);
+    const reg = await readJSON(dataPath('agents.json'), null);
     for (const a of (reg && reg.agents) || []) {
       const cmds = (a.installs || []).map((c) => `${c.label || ''} ${c.cmd || ''}`).join(' · ');
       items.push({
@@ -530,7 +542,7 @@ async function buildIndex() {
 
   // 概念页也进索引：搜 "token" 能顺手看到定义
   try {
-    const cj = await readJSON(path.join(ROOT, 'concepts.json'), null);
+    const cj = await readJSON(dataPath('concepts.json'), null);
     for (const c of (cj && cj.concepts) || []) {
       items.push({
         kind: 'concept',
@@ -681,6 +693,8 @@ ipcMain.handle('state:load', async () => {
     today,
     root: ROOT,
     appVersion: app.getVersion(),
+    // 交给 DSH 的指令里写的是实际生效的提示词（有本机覆盖就用 local/ 里的）
+    paths: { dailyPrompt: dataPath('prompts', 'daily.md') },
     dates,
     hasBrief: exists(path.join(DIR.inbox, `${today}.md`)),
     hasDigest: exists(path.join(DIR.digests, `${today}.md`)),
@@ -870,8 +884,8 @@ ipcMain.handle('index:read', async () => {
 ipcMain.handle('digest:read', async (_e, date) => readText(path.join(DIR.digests, `${date}.md`)));
 ipcMain.handle('collect:run', () => runCollect());
 ipcMain.handle('archive:run', () => runArchive());
-ipcMain.handle('agents:load', async () => readJSON(path.join(ROOT, 'agents.json'), null));
-ipcMain.handle('concepts:load', async () => readJSON(path.join(ROOT, 'concepts.json'), null));
+ipcMain.handle('agents:load', async () => readJSON(dataPath('agents.json'), null));
+ipcMain.handle('concepts:load', async () => readJSON(dataPath('concepts.json'), null));
 /* ------------------------------------------ 对话 / 用户画像 / 猜你需要 */
 
 const EMPTY_PROFILE = () => ({
@@ -1053,8 +1067,8 @@ async function materialsText() {
 }
 
 async function referenceText() {
-  const c = await readJSON(path.join(ROOT, 'concepts.json'), null);
-  const a = await readJSON(path.join(ROOT, 'agents.json'), null);
+  const c = await readJSON(dataPath('concepts.json'), null);
+  const a = await readJSON(dataPath('agents.json'), null);
   const L = [];
   if (c && Array.isArray(c.concepts)) {
     L.push('', '## 本机「核心概念」页的词条（用户问基础概念时按这个口径讲）');
@@ -1996,7 +2010,7 @@ ipcMain.handle('chat:clear', async () => {
 });
 /* ------------------------------------------ 模板库：提示词模板 + 填空题 */
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
-const TMPL_FILE = path.join(ROOT, 'templates.json');
+const tmplFile = () => dataPath('templates.json');
 const TMPL_LOG = path.join(DIR.state, 'tmpllog.json');
 const MINE_FILE = path.join(DIR.state, 'mytemplates.json');
 let TMPL_CACHE = null;
@@ -2004,9 +2018,9 @@ let tmplRunning = false;
 
 async function loadTemplates() {
   if (TMPL_CACHE) return TMPL_CACHE;
-  const j = await readJSON(TMPL_FILE, null);
+  const j = await readJSON(tmplFile(), null);
   if (!j || !Array.isArray(j.templates)) {
-    throw new Error('没读到 templates.json。文件应该在 ' + TMPL_FILE);
+    throw new Error('没读到 templates.json。文件应该在 ' + tmplFile());
   }
   TMPL_CACHE = j;
   return TMPL_CACHE;
@@ -3385,11 +3399,11 @@ ipcMain.handle('trans:one', async (_e, arg) => {
 
 /* ------------------------------------------- 概念词典：领域包（domains.json + 自定义） */
 
-const DOMAINS_PATH = path.join(ROOT, 'domains.json');
+const domainsPath = () => dataPath('domains.json');
 const DOMAINS_CUSTOM = path.join(DIR.state, 'domains_custom.json');
 
 async function loadDomains() {
-  const base = (await readJSON(DOMAINS_PATH, null)) || { packs: [] };
+  const base = (await readJSON(domainsPath(), null)) || { packs: [] };
   const custom = (await readJSON(DOMAINS_CUSTOM, null)) || { packs: [] };
   const seen = new Set();
   const packs = [];
@@ -3727,7 +3741,7 @@ ipcMain.handle('digest:generate', async (_e, date) => {
 });
 ipcMain.handle('settings:save', async (_e, patch) => {
   const next = {};
-  for (const k of ['baseUrl', 'model', 'scheduleEnabled', 'scheduleTime', 'matchEnabled', 'pushDaily', 'summaryAll', 'onboarded', 'compact', 'webSearch']) {
+  for (const k of ['baseUrl', 'model', 'scheduleEnabled', 'scheduleTime', 'matchEnabled', 'pushDaily', 'summaryAll', 'onboarded', 'compact', 'webSearch', 'autoUpdateCheck']) {
     if (patch[k] !== undefined) next[k] = patch[k];
   }
   for (const k of ['priceIn', 'priceOut']) {
@@ -3741,6 +3755,33 @@ ipcMain.handle('settings:save', async (_e, patch) => {
   await saveConfig(next);
   return { ok: true, config: publicConfig() };
 });
+/* ------------------------------------------------------------------ 更新 */
+
+let updater = null;
+const getUpdater = () => {
+  if (!updater) {
+    updater = createUpdater({
+      ROOT,
+      APP_DIR: __dirname,
+      getConfig: () => config,
+      send,
+      isBusy: () => isCollecting || isGenerating || isArchiving,
+    });
+  }
+  return updater;
+};
+ipcMain.handle('update:status', () => getUpdater().status());
+ipcMain.handle('update:check', () => getUpdater().check());
+ipcMain.handle('update:download', () => getUpdater().download());
+ipcMain.handle('update:apply', async () => {
+  const r = await getUpdater().apply();
+  if (r.ok) {
+    // 换完文件重启：新的 main.js / 界面代码要重新加载才生效
+    setTimeout(() => { app.isQuitting = true; app.relaunch(); app.exit(0); }, 600);
+  }
+  return r;
+});
+
 ipcMain.handle('shell:open', async (_e, url) => {
   if (typeof url === 'string' && /^https?:\/\//i.test(url)) await shell.openExternal(url);
   return true;
@@ -3843,6 +3884,10 @@ if (!app.requestSingleInstanceLock()) {
     setTimeout(scheduleTick, 3_000);
     setTimeout(() => { void maybeNotify(); }, 6_000);
     setInterval(() => { void maybeNotify(); }, 15 * 60_000);
+    // 查更新：启动 15 秒后一次，之后每 6 小时；只查，有新版本时在界面上提示，由用户决定装不装
+    const autoCheck = () => { if (config.autoUpdateCheck !== false) void getUpdater().check({ quiet: true }); };
+    setTimeout(autoCheck, 15_000);
+    setInterval(autoCheck, 6 * 60 * 60_000);
   });
   app.on('window-all-closed', () => { if (!tray) app.quit(); });
   app.on('before-quit', () => { try { collectChild?.kill(); } catch {} });

@@ -14,7 +14,7 @@ const PATCH = {
   project: { summary: 'Godot 像素中世纪游戏，负责 UI、美术、光照', stack: 'Godot 4.7.2 / GDScript', goals: '让像素画面有可信的光' },
   needs: [
     { topic: '像素素材与光照', detail: '需要批量生成法线贴图，让 2D 光照像样', keywords: ['sprite', 'normal', 'godot', 'shader'], weight: 3 },
-    { topic: '本地小模型跑 UI 审查', detail: '想在 8G 显存的 4060 上跑视觉模型看截图', keywords: ['local', 'vision', 'ollama'], weight: 2 },
+    { topic: '本地小模型跑 UI 审查', detail: '想在 8G 显存的显卡上跑视觉模型看截图', keywords: ['local', 'vision', 'ollama'], weight: 2 },
   ],
 };
 

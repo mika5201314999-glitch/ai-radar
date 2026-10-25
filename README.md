@@ -30,6 +30,31 @@
 - 完成后外圈停转、字变成 COMPLETE，2.5 秒后自己收起；出错时字变成 ERROR，卡片留着显示原因，点「关掉」才消失。
 - 点「收起」变成右下角一个小条（显示百分比和已用时间），任务照常在后台跑，点小条再展开。
 - 代码在 `app/renderer/jobs.js`，动画图在 `app/renderer/assets/loading/`（来源见同目录 `SOURCE.txt`）。
+
+**自动更新**：应用启动 15 秒后和每 6 小时，去 GitHub Releases 读一次 `latest.json` 比版本号（设置里可以关）。
+有新版本时，命令栏出现黄色的「新版本 vX」，设置的「更新」一栏能看说明、点「下载更新」（进度显示在任务卡片里），
+下载好后点「重启并更新」。
+- 只换程序代码（`bin\resources\app`）和随应用发布的脚本、模板、词典、提示词，不动 Electron 运行环境；
+  `app/config.json`、`state/`、`data/`、`digests/`、`inbox/`、`chats/`、`local/` 都不碰。
+- 模板、词典、提示词这类数据文件，用户改过的不覆盖，新版另存成同名的 `.new` 文件，重启后会提示是哪几个。
+  判断依据是 `release/history.json` 里记的每个文件历次发布过的 sha256。
+- 整个更新包和里面每个文件都校验 sha256，对不上就丢弃；被替换的旧文件备份在用户数据目录的 `update\backup-*`。
+- 有 `.git` 的目录（开发目录）和没打包的开发运行不会自动更新，用 git 管理。
+- 新版本如果要求更新的 Electron 运行环境，只提示去下载完整版，不自己换。
+- 国内连不上 GitHub 时，可以把同样的 `latest.json` 和更新包放到镜像，在 `app/config.json` 里加
+  `"updateFeeds": ["https://镜像地址/目录"]`，会先试镜像再试 GitHub。
+
+**本机覆盖（`local/`）**：`local/` 下放同名文件就优先用它，例如 `local/prompts/daily.md`、`local/templates.json`、
+`local/concepts.json`。适合放写着自己项目、设备的个人版本；`local/` 不进仓库，更新也不碰。
+
+**发布新版本**（维护者）：
+1. 改 `app/package.json` 的 `version`，在 `release/notes/<版本>.md` 写更新说明，提交。
+2. `node app/tools/release.mjs`：从已提交的内容打更新包，产出在 `release/out/<版本>/`。
+   如果 `local/release-forbid.txt` 存在，里面列的词出现在要发布的文件里就会中止（防止把个人内容发出去）。
+   加 `--dist <空目录> --zip` 还会导出一份给新用户的完整目录并压成 zip。
+3. 提交 `release/history.json`，在 GitHub 上建 Release（标签 `v<版本>`），把 `latest.json` 和更新包（以及 zip）传上去。
+   具体步骤写在 `release/out/<版本>/发布步骤.txt`。
+
 外观规则写在 `app/renderer/styles.css` 开头：黄色只表示「当前位置 / 可以点 / 要看一眼」，切角的块可以点，红色只留给删除。
 界面字体 Saira（SIL OFL 1.1，许可证在 `app/renderer/assets/fonts/Saira-OFL.txt`）随应用打包，中文用系统的 Noto Sans SC，没有就用微软雅黑。
 改版前的界面文件备份在 `app/backups/ui-endfield-20261025/`。
@@ -81,7 +106,7 @@
 | 目标 | 提高像素素材（角色、建筑、特效）的制作效率 | 生成检索词、判断"能解决哪一步" |
 | 常用软件 | Godot 4.7.2、Aseprite、Photoshop | 判断能不能接进现有流程 |
 | 预算 | 尽量免费（开源、MIT/Apache 之类） | 收费项目直接降级或跳过 |
-| 设备条件 | Windows + RTX 4060 Laptop 8GB | 显存、Python、平台能不能跑 |
+| 设备条件 | Windows 笔记本 + 8GB 显存独显 | 显存、Python、平台能不能跑 |
 | 能接受的操作难度 | 点几下拖张图就出结果 | 要命令行/装环境的会被标出来 |
 | 试过但不满意 | 手绘法线贴图太慢；3D 高模太重 | 避免推荐你已经走过死路的东西 |
 
@@ -489,7 +514,7 @@ PyPI 一条核过 `aider-chat 0.86.2`，桌面客户端是官网下载页可直�
 
 另外四组各有明确用途：
 
-- **硬件侧**（5）—— 回答「这台机器能不能跑」。4060 Laptop 的 8GB 显存是分界线：8B 按 q4 约 4–5GB，
+- **硬件侧**（5）—— 回答「这台机器能不能跑」。8GB 显存是常见的分界线：8B 按 q4 约 4–5GB，
   再留 1–2GB 给上下文；跑分前先插电，电池模式下性能能差一倍。
 - **多媒体与图形侧**（6）—— 像素美术与光照的落点：整数倍缩放、锁色板、硬边/羽化怎么分、
   图集与十二帧动画、法线贴图（2D 光照的死结）、按 delta 推帧而不是按帧数。

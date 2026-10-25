@@ -28,3 +28,9 @@ app/shot.png
 promo/build/
 promo/audio/sfx.wav
 promo/AI情报台-宣传短片-仅音效.mp4
+
+# ---- 本机覆盖：个人化的提示词、模板、词典示例，以及发布前的个人内容检查词表 ----
+local/
+
+# ---- 发布产物（更新包、完整包），传到 GitHub Releases，不进仓库 ----
+release/out/

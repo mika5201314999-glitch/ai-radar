@@ -275,6 +275,30 @@ kbd { font-family: var(--f-ui); }
 .cmd-btn:hover { background: linear-gradient(-45deg, transparent calc(var(--cut) - 0.5px), var(--signal) var(--cut)); color: var(--on-signal); }
 .cmd-btn:hover kbd { color: var(--on-signal); }
 
+/* 有新版本：命令栏里一块黄（「要看一眼」） */
+.cmd-btn.cmd-update {
+  background: linear-gradient(-45deg, transparent calc(var(--cut) - 0.5px), var(--signal) var(--cut));
+  color: var(--on-signal);
+  font-weight: 700;
+}
+.cmd-btn.cmd-update[hidden] { display: none; }
+
+/* 设置页的更新一栏 */
+.upd-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; font-size: 13px; }
+.upd-notes {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  max-height: 160px;
+  overflow: auto;
+  border-left: 3px solid var(--trace);
+  background: var(--chip-2);
+  font-family: var(--f-text);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+}
+
 .tri { display: grid; grid-template-columns: repeat(3, 1fr); height: 3px; }
 .tri > i:nth-child(1) { background: var(--tri-a); }
 .tri > i:nth-child(2) { background: var(--signal); }
