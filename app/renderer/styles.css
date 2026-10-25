@@ -1233,6 +1233,179 @@ pre:hover .copy-code { opacity: 1; }
 }
 @keyframes wipe-in { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
 
+/* ------------------------------------------------------------------ 任务进度（jobs.js） */
+/* 右下角的卡片：人物动画 + 绕着转的 LOADING，24 格进度条，已用时间和「多久没动静」。
+   卡住、偏慢时最后一行变成黄底提示；完成和出错时外圈停转、字换成 COMPLETE / ERROR。 */
+
+.jobs {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 78;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+}
+.jobs[hidden] { display: none; }
+.jobs > * { pointer-events: auto; }
+
+.job {
+  position: relative;
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 4px 14px;
+  width: 400px;
+  max-width: calc(100vw - var(--rail-w) - 40px);
+  padding: 16px 18px 16px 10px;
+  background: var(--sheet);
+  border: 1px solid var(--ink);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%);
+  animation: wipe-in 0.24s var(--mech);
+}
+.job[hidden] { display: none; }
+.job::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 18%;
+  height: 5px;
+  background: var(--ink);
+}
+
+.job-art {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 104px;
+  height: 104px;
+}
+.job-art img { position: relative; z-index: 1; width: 70px; height: auto; user-select: none; }
+.job-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  animation: ring-spin 8s linear infinite;
+}
+.job-ring text {
+  font-family: var(--f-ui);
+  font-size: 10.5px;
+  font-weight: 700;
+  font-stretch: var(--wider);
+  letter-spacing: 0.1em;
+  fill: var(--ink);
+}
+@keyframes ring-spin { to { transform: rotate(360deg); } }
+
+.job-main { min-width: 0; align-self: center; }
+.job-eb {
+  font-size: 10px;
+  font-weight: 600;
+  font-stretch: var(--wider);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.job-eb::before { content: '// '; letter-spacing: 0; }
+.job-title { margin-top: 2px; padding-right: 44px; font-family: var(--f-ui); font-size: 15px; font-weight: 800; line-height: 1.3; }
+
+.job-bar { display: grid; grid-template-columns: repeat(24, 1fr); gap: 2px; height: 10px; margin: 10px 0 7px; }
+.job-bar > i { background: var(--chip); }
+.job-bar > i.on { background: var(--signal); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--on-signal) 25%, transparent); }
+/* 不知道总量时：一段黄格从左往右走（只在任务进行中） */
+.job-bar.is-unknown > i { animation: cell-run 1.6s linear infinite; animation-delay: calc(var(--i) * 0.055s); }
+@keyframes cell-run {
+  0%, 22% { background: var(--signal); }
+  30%, 100% { background: var(--chip); }
+}
+
+.job-step {
+  font-family: var(--f-text);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.job-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 0;
+  margin: 5px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11.5px;
+  font-stretch: var(--wide);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+.job-facts > li { padding: 0 9px; border-left: 1px solid var(--rule-2); }
+.job-facts > li:first-child { padding-left: 0; border-left: 0; }
+
+/* 卡住或偏慢：最后一行变成黄底提示 */
+.job.is-stall .job-beat, .job.is-slow .job-beat {
+  flex-basis: 100%;
+  margin-top: 4px;
+  padding: 1px 7px;
+  border-left: 0;
+  background: var(--signal);
+  color: var(--on-signal);
+  font-weight: 700;
+}
+.job.is-stall .job-beat::before { content: '注意 '; }
+
+/* 完成 / 出错：外圈停转 */
+.job.is-ok .job-ring, .job.is-err .job-ring { animation-play-state: paused; }
+.job.is-ok .job-bar > i { background: var(--ink); }
+.job.is-err { border-color: var(--ink); }
+.job.is-err .job-step { white-space: normal; }
+.job.is-err .job-beat::before {
+  content: '出错';
+  margin-right: 6px;
+  padding: 0 5px;
+  background: var(--signal);
+  color: var(--on-signal);
+  font-weight: 700;
+}
+
+.job-x {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  padding: 1px calc(7px + var(--cut)) 1px 8px;
+  border: 0;
+  background: linear-gradient(-45deg, transparent calc(var(--cut) - 0.5px), var(--chip) var(--cut));
+  font-size: 11.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.job-x:hover { background: linear-gradient(-45deg, transparent calc(var(--cut) - 0.5px), var(--signal) var(--cut)); color: var(--on-signal); }
+
+/* 收起后的小条 */
+.job-mini {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px calc(14px + var(--cut)) 4px 4px;
+  border: 1px solid var(--ink);
+  background: var(--sheet);
+  color: var(--ink);
+  cursor: pointer;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%);
+}
+.job-mini .job-art { width: 58px; height: 58px; }
+.job-mini .job-art img { width: 38px; }
+.job-mini .job-ring text { font-size: 15px; letter-spacing: 0.06em; }
+.job-mini-t { display: flex; flex-direction: column; align-items: flex-start; font-size: 13px; font-weight: 700; text-align: left; }
+.job-mini-t small { font-size: 11px; font-weight: 400; font-stretch: var(--wide); font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.job-mini.is-stall .job-mini-t small, .job-mini.is-slow .job-mini-t small { background: var(--signal); color: var(--on-signal); padding: 0 4px; }
+.job-mini:hover { border-color: var(--ink); background: color-mix(in srgb, var(--signal) 18%, var(--sheet)); }
+
 /* ------------------------------------------------------------------ panels */
 /* 白板，顶边一段粗墨页签；抽屉、搜索框、术语卡、引导共用 */
 

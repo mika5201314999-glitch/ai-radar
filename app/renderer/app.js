@@ -1164,8 +1164,8 @@ async function digestToEn() {
   const text = typeof raw === 'string' ? raw : (raw && raw.body) || '';
   if (!text.trim()) return;
   if (S.digestEn[S.date]) { toast('这一天的英文版已经有了，往下翻。'); return; }
-  toast('正在翻成英文，长文要一会儿…');
-  const r = await api.transText({ text, to: 'en', from: 'zh', id: 'digest-en' });
+  const r = await withJob('digest-en', '正在把简报翻成英文', { en: 'Translate', expect: 30, step: '长文要一会儿' },
+    () => api.transText({ text, to: 'en', from: 'zh', id: 'digest-en' }));
   if (!r.ok) {
     toast(r.needKey ? '先去设置填 API key。' : (r.error || '翻译失败'), true);
     return;
@@ -1481,7 +1481,7 @@ async function dictGenerate() {
   S.dict.gen.busy = true;
   S.dict.gen.err = '';
   renderView();
-  const r = await api.domainGen(name);
+  const r = await withJob('domain', `正在写「${name}」领域包`, { en: 'Glossary', expect: 45, step: '模型在整理先懂的词、动手的工具和进阶路线' }, () => api.domainGen(name));
   S.dict.gen.busy = false;
   if (!r || !r.ok) {
     S.dict.gen.err = (r && r.needKey)
@@ -1989,7 +1989,8 @@ async function runNeedsScan(onlyId) {
   S.needs.busy = true;
   renderView();
   try {
-    const r = await api.needsScan({ range: 'd7', id: onlyId || '' });
+    const r = await withJob('needs-scan', '正在按需求筛项目', { en: 'Needs', expect: 8, step: '对照每条需求的条件和底线' },
+      () => api.needsScan({ range: 'd7', id: onlyId || '' }));
     S.needs.scan = r;
     toast(`扫了 ${num(r.scanned)} 条材料，给出 ${num((r.needs || []).reduce((a, g) => a + g.items.length, 0))} 条推荐。`);
   } catch (e) {
@@ -2004,7 +2005,7 @@ async function runNeedFind(id) {
   const box = document.getElementById('found-' + id);
   if (box) box.innerHTML = '<p class="hint keep">正在 GitHub 现搜…（两次查询，约 3 秒）</p>';
   try {
-    const r = await api.needsFind(id);
+    const r = await withJob('needs-find', '正在 GitHub 现搜', { en: 'Search', expect: 5, step: '两次查询，再按需求过一遍条件' }, () => api.needsFind(id));
     if (!box) return;
     const errs = (r.errors || []).length ? `<p class="hint bad">${esc(r.errors.join('；'))}</p>` : '';
     const body = (r.items || []).length
@@ -2049,7 +2050,7 @@ async function checkTracker() {
   S.needs.trackBusy = true;
   renderView();
   try {
-    const r = await api.trackCheck();
+    const r = await withJob('track', '正在检查追踪名单', { en: 'Tracking', expect: 15, step: '逐个查仓库信息和最新版本' }, () => api.trackCheck());
     S.needs.tracking = r.items || [];
     toast(r.changed ? `查到 ${num(r.changed)} 处变化。` : '都查了，没有变化。');
   } catch (e) {
@@ -2282,12 +2283,14 @@ async function sendChat(text) {
   S.chat.msgs.push({ role: 'user', content: t });
   S.chat.msgs.push({ role: 'assistant', content: '' });
   renderView();
+  jobStart('chat', '正在回答', { en: 'Chat', live: true, stallAfter: 40, step: S.state.config.webSearch !== false ? '先联网搜一下，再交给模型' : '等模型开口' });
   let res;
   try {
     res = await api.chatSend(t);
   } catch (e) {
     res = { ok: false, error: e.message || String(e) };
   }
+  jobEnd('chat', !!(res && res.ok), res && res.ok ? '回答完了' : (res?.error || '发送失败'));
   S.chat.busy = false;
   if (res && res.ok) {
     S.chat.msgs[S.chat.msgs.length - 1].content = res.reply || S.chat.stream;
@@ -2954,7 +2957,25 @@ async function doCollect() {
   const log = $('#log');
   log.hidden = false;
   log.textContent = '';
+  startCollectJob('启动采集器…');
   renderRail();
+}
+
+/* 采集的进度卡片：采集器每抓完一个源打一行「[radar] step k/12 名称」 */
+function startCollectJob(step) {
+  jobStart('collect', '正在采集今天的资讯', { en: 'Collect', total: 12, live: true, stallAfter: 30, step });
+}
+
+function collectProgress(line) {
+  if (!jobRunning('collect')) startCollectJob('');
+  const m = /\[radar\] step (\d+)\/(\d+) (.+)/.exec(line);
+  if (m) { jobBeat('collect', `${m[3]} 抓完了`, Number(m[1])); return; }
+  const t = String(line).replace(/^\[radar\]\s*/, '');
+  if (/^collecting/.test(t)) jobBeat('collect', '开始抓取各个数据源…');
+  else if (/^done/.test(t)) jobBeat('collect', '写入今天的数据文件');
+  else if (/^counts/.test(t)) jobBeat('collect', '统计条目数');
+  else if (/^failed sources/.test(t)) jobBeat('collect', '有源没抓到：' + t.replace(/^failed sources:\s*/, ''));
+  else jobBeat('collect', t.slice(0, 80));
 }
 
 function appendLog(line, kind) {
@@ -2972,7 +2993,8 @@ async function doGenerate() {
   if (!S.state.config.hasKey) { toast('先去「设置」填一个 API key。', true); setView('settings'); return; }
   S.generating = true;
   renderView();
-  const res = await api.generate(S.date);
+  const res = await withJob('generate', '正在生成今天的简报', { en: 'Brief', expect: 40, step: '模型在读今天的原件，一般 20–60 秒' },
+    () => api.generate(S.date));
   S.generating = false;
   if (res.ok) {
     toast(`简报写好了，${res.seconds} 秒。`);
@@ -3164,8 +3186,8 @@ function summaryBlock() {
 
 async function doSummarize() {
   const key = `${S.date}|${S.radarTab}`;
-  toast('在读这一栏，10–30 秒…');
-  const r = await api.summaryTab({ date: S.date, tab: S.radarTab });
+  const r = await withJob('summary', '正在摘要这一栏', { en: 'Summary', expect: 20, step: '模型在读这一栏，一般 10–30 秒' },
+    () => api.summaryTab({ date: S.date, tab: S.radarTab }));
   if (r.ok) { S.summary[key] = r.text; renderView(); }
   else toast(r.needKey ? '要先在设置里填 API key。' : (r.error || '摘要失败'), true);
 }
@@ -3188,8 +3210,7 @@ async function renderWeekly(host) {
 }
 
 async function doWeekly() {
-  toast('在写周报，20–40 秒…');
-  const r = await api.weeklyBuild();
+  const r = await withJob('weekly', '正在写周报', { en: 'Weekly', expect: 30, step: '汇总最近 7 天，一般 20–40 秒' }, () => api.weeklyBuild());
   if (r && r.ok) { S.weekly = { key: r.key, md: r.md }; toast('周报写好了'); renderView(); }
   else toast((r && r.error) || '生成失败', true);
 }
@@ -3397,8 +3418,10 @@ async function tplUse() {
   S.tpl.err = '';
   S.tpl.busy = true;
   renderView();
+  jobStart('tmpl', '正在按模板生成', { en: 'Template', live: true, stallAfter: 40, step: '等模型开口' });
   try {
     const r = await api.tmplRun({ id: S.tpl.id, values: S.tpl.values });
+    jobEnd('tmpl', !!(r && r.ok), r && r.ok ? '写好了' : ((r && r.error) || '生成失败'));
     S.tpl.busy = false;
     if (r && r.ok) {
       S.tpl.out = r.out;
@@ -3409,6 +3432,7 @@ async function tplUse() {
       toast(S.tpl.err, true);
     }
   } catch (e) {
+    jobEnd('tmpl', false, String(e.message || e));
     S.tpl.busy = false;
     S.tpl.err = String(e.message || e);
     toast(S.tpl.err, true);
@@ -3713,8 +3737,8 @@ document.addEventListener('click', async (ev) => {
       }
     }
     else if (a === 'run-archive') {
-      toast('开始抓最近 3 个月的档案，约 30 秒…');
-      const r = await api.archiveRun();
+      const r = await withJob('archive', '正在更新历史档案', { en: 'Archive', live: true, stallAfter: 45, step: '抓最近 3 个月的仓库和模型，约 30 秒' },
+        () => api.archiveRun());
       if (r.ok) { toast(`档案更新完成，用了 ${r.seconds} 秒。`); S.aggKey = ''; S.agg = null; await refresh(); }
       else toast('档案更新失败：' + (r.error || '未知错误'), true);
     }
@@ -4101,14 +4125,16 @@ $('#main').addEventListener('scroll', () => {
   $('#prog').style.height = pct + '%';
 });
 
-api.onCollectLog(({ line, kind }) => appendLog(line, kind));
+api.onCollectLog(({ line, kind }) => { appendLog(line, kind); collectProgress(line); });
 api.onArchiveLog(({ line, kind }) => {
+  if (jobRunning('archive')) jobBeat('archive', String(line).slice(0, 80));
   const log = $('#log');
   if (log.hidden) { log.hidden = false; log.textContent = ''; }
   appendLog('[档案] ' + line, kind);
 });
 api.onCollectDone(async ({ ok, error, seconds }) => {
   S.collecting = false;
+  jobEnd('collect', ok, ok ? `采集完成，用了 ${Math.round(seconds)} 秒` : error);
   appendLog(ok ? `完成，用了 ${seconds} 秒。` : `失败：${error}`, ok ? 'head' : 'err');
   if (ok) { toast(`采集完成，${seconds} 秒。`); await refresh(); }
   else { toast(error, true); renderRail(); }
@@ -4120,6 +4146,7 @@ api.onGenerateTick(({ seconds }) => {
 
 api.onChatDelta(({ text }) => {
   S.chat.stream += text;
+  jobBeat('chat', `已收到 ${S.chat.stream.length} 个字`);
   const box = document.getElementById('streamBox');
   if (box) box.textContent = S.chat.stream;
 });
@@ -4164,6 +4191,7 @@ document.addEventListener('input', (e) => {
 api.onTmplDelta(({ id, text }) => {
   if (!S.tpl || S.tpl.id !== id) return;
   S.tpl.stream = (S.tpl.stream || '') + text;
+  jobBeat('tmpl', `已收到 ${S.tpl.stream.length} 个字`);
   const box = document.getElementById('toutBody');
   if (box) box.textContent = S.tpl.stream;
 });
@@ -4186,6 +4214,6 @@ api.onNav(({ view }) => setView(view));
   await loadData(S.date);
   renderRail();
   renderView();
-  if (S.state?.collecting) { S.collecting = true; renderRail(); }
+  if (S.state?.collecting) { S.collecting = true; startCollectJob('采集已经在进行（应用是中途打开的）'); renderRail(); }
   if (onboardNeeded()) setTimeout(() => startOnboard(), 250);
 })();

@@ -1,0 +1,9 @@
+mascot.webp — 任务进度卡片里的加载动画
+
+来源：用户提供的 GIF（F:\素材\920C27F6ADAD3E2D644B46D006B7F072.gif，342×337，189 帧），
+      原图是浅蓝到白的渐变背景。
+授权：用户 2026-10-25 确认这张人物图已获授权，可以随应用和公开仓库一起分发。
+处理：app/tools/cutout_gif.mjs 去底成透明，缩到 220 像素宽、15 帧/秒，编码成带透明通道的动态 WebP（约 1.1 MB）。
+      node app/tools/cutout_gif.mjs <ffmpeg.exe> <原 GIF> app/renderer/assets/loading/mascot.webp 220 15
+
+换成别的动画时，替换 mascot.webp 即可（任意带透明的动态 WebP / GIF / APNG，正方形附近的比例最合适）。

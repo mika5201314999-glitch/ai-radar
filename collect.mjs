@@ -1190,20 +1190,29 @@ async function main() {
 
   console.log(`[radar] collecting ${DATE} ...`);
 
+  // 进度：每完成一步打一行「[radar] step 已完成/总数 名称」，应用里的进度条按它走
+  const STEPS = 12;
+  let stepsDone = 0;
+  const step = (label, p) => Promise.resolve(p).then((v) => {
+    stepsDone += 1;
+    console.log(`[radar] step ${stepsDone}/${STEPS} ${label}`);
+    return v;
+  });
+
   const [ghSrc, models, news, papers, hn, skillsSh, bilibili, zhihu] = await Promise.all([
-    trySource('github', collectGitHub).then((v) => v || { new_repos: [], active: [], ai_new: [], skills_raw: [] }),
-    collectModels(),
-    collectNews(),
-    collectPapers(),
-    collectHN(),
-    trySource('skills.sh', collectSkillsSh),
-    collectBilibili(),
-    collectZhihu(),
+    step('GitHub', trySource('github', collectGitHub).then((v) => v || { new_repos: [], active: [], ai_new: [], skills_raw: [] })),
+    step('模型', collectModels()),
+    step('新闻', collectNews()),
+    step('论文', collectPapers()),
+    step('Hacker News', collectHN()),
+    step('skills.sh', trySource('skills.sh', collectSkillsSh)),
+    step('B站', collectBilibili()),
+    step('知乎', collectZhihu()),
   ]);
   // 联网搜索要用当天的模型名当查询词，所以放在模型结果之后串行跑（约 4 秒）
-  const web = await collectWeb(models);
+  const web = await step('联网搜索', collectWeb(models));
   // 前沿动态：HF 论文 + 模型价格/上下文变化（要和模型结果对齐，也放串行）
-  const frontier = await collectFrontier(models);
+  const frontier = await step('前沿动态', collectFrontier(models));
   let gh = ghSrc;
 
   // 某个源今天挂了，不要把昨天的条目一起清空：沿用上一份数据，并在 status 里留痕。
@@ -1238,11 +1247,11 @@ async function main() {
   const webSrc = web || (prev?.web ? { ...prev.web, carried_over: true } : { total: 0, items: [], queries: [] });
   const frontierSrc = frontier || (prev?.frontier ? { ...prev.frontier, carried_over: true } : { total: 0, today: [], week: [], items: [] });
 
-  const tracked = await collectTracked(prev);
+  const tracked = await step('追踪名单', collectTracked(prev));
   const trackedSrc = tracked || (prev?.tracked ? { ...prev.tracked, carried_over: true } : null);
 
   const pool = [...(gh.new_repos || []), ...(gh.active || []), ...(gh.ai_new || [])];
-  const { velocity, next } = await computeVelocity(pool);
+  const { velocity, next } = await step('星标增速', computeVelocity(pool));
 
   // 技能：从今天抓到的全部仓库里识别，再按作用对象归类
   const skills = pickSkills([...pool, ...(gh.skills_raw || [])]);
