@@ -33,7 +33,7 @@ console.log('2/5 换上应用代码');
 const appRes = path.join(BIN, 'resources', 'app');
 fs.rmSync(path.join(BIN, 'resources', 'default_app.asar'), { force: true });
 fs.mkdirSync(appRes, { recursive: true });
-for (const f of ['main.js', 'preload.js', 'updater.js', 'package.json', 'icon.ico', 'icon-32.png', 'icon-256.png']) {
+for (const f of ['main.js', 'preload.js', 'updater.js', 'events.js', 'package.json', 'icon.ico', 'icon-32.png', 'icon-256.png']) {
   fs.copyFileSync(path.join(APP_DIR, f), path.join(appRes, f));
 }
 fs.cpSync(path.join(APP_DIR, 'renderer'), path.join(appRes, 'renderer'), { recursive: true });

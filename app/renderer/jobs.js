@@ -3,7 +3,7 @@
  *
  *   jobStart(id, title, { en, total, expect, stallAfter, live, step, percent })
  *     percent     进度显示成百分比（下载这类按字节算的）而不是「k / n 步」
- *     total       有总步数就显示真实进度（例如采集 12 步），没有就显示来回走的进度条
+ *     total       有总步数就显示真实进度（例如采集 13 步），没有就显示来回走的进度条
  *     expect      一般要多少秒；超过两倍就提示「比平时慢」
  *     live        任务会不断报告进展（采集日志、流式回答）；stallAfter 秒没新动静就提示「可能卡住了」
  *   jobBeat(id, stepText, done)   报一次进展；done 是已完成步数（可省）

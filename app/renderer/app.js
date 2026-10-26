@@ -27,6 +27,7 @@ const S = {
   sdoc: { open: false, busy: false, data: null, err: '', env: null, envBusy: false },
   tr: { to: 'zh', busy: false, out: '', ms: 0, err: '', cached: false },
   uc: { open: false, busy: false, data: null, item: null, err: '', followed: false },
+  vl: { open: false, kind: 'video', url: '', title: '', at: '', mode: 'overview', busy: false, stream: '', data: null, err: '' },
   digestEn: {},
   drawer: null,
   concepts: undefined,
@@ -161,6 +162,7 @@ function renderRail() {
     history: (st.dates || []).length,
     saved: Object.keys(S.aux.bookmarks || {}).length,
     radar: c ? (c.repos || 0) + (c.news || 0) : 0,
+    events: (S.events && S.events.list ? S.events.list : []).filter((e) => e.status === 'tracking').reduce((n, e) => n + evNew(e), 0),
   };
   for (const el of document.querySelectorAll('.nav-item [data-count]')) {
     const n = counts[el.dataset.count];
@@ -173,7 +175,7 @@ function renderRail() {
 const VIEW_EN = {
   today: 'Daily Brief', weekly: 'Weekly', history: 'History', saved: 'Saved',
   needs: 'Needs', radar: 'Raw Radar', ext: 'Plugins', chat: 'Chat', tasks: 'Templates',
-  concepts: 'Glossary', agents: 'Agents', settings: 'Settings', trans: 'Translate',
+  concepts: 'Glossary', agents: 'Agents', settings: 'Settings', trans: 'Translate', events: 'Events',
 };
 
 function renderWhere() {
@@ -447,6 +449,7 @@ function renderViewInner() {
   if (S.view === 'weekly') return renderWeekly(host);
   if (S.view === 'trans') return renderTrans(host);
   if (S.view === 'saved') return renderSaved(host);
+  if (S.view === 'events') return renderEvents(host);
   if (S.view === 'agents') return renderAgents(host);
   if (S.view === 'concepts') return renderConcepts(host);
   if (S.view === 'needs') return renderNeeds(host);
@@ -487,16 +490,34 @@ async function renderToday(host) {
     const standfirst = m ? m[1].replace(/\n+/g, ' ').trim() : '';
     const rest = m ? body.replace(m[0], '') : body;
     const isToday = date === todayStr();
+    const sid = S.state.config.briefStyle || 'plain';
+    const styled = sid !== 'plain' ? S.styled[`${date}:${sid}`] : null;
+    const styleBusy = S.styleBusy === `${date}:${sid}`;
+    const shownMd = styled && !S.showOriginal ? styled.replace(/^\s*#[^#\n]*\n/, '').trimStart() : rest;
     host.innerHTML = `
       ${stampLine()}
       ${isToday ? '' : `<div class="date-nav"><button class="back" data-act="today">← 回到今天</button><span class="hint">在看 ${esc(date)} 的简报</span></div>`}
-      ${standfirst ? `<p class="standfirst">${esc(standfirst)}</p>` : ''}
-      ${tplStrip()}
-      <div class="prose digest-body">${window.renderMarkdown(rest)}</div>
-      ${digestEnBlock()}
-      ${matchShell()}
-      <div class="actions"><button class="btn quiet" data-act="digest-en">译成英文</button><button class="btn quiet" data-act="regen">重新生成</button><button class="btn quiet" data-act="open-digests">打开简报文件夹</button></div>`;
+      <div class="today-grid">
+        <div class="today-main">
+          <h1 class="brief-title" id="briefTitle">${esc(S.titles[date] || ruleTitleOf(md))}</h1>
+          ${standfirst && !(styled && !S.showOriginal) ? `<p class="standfirst">${esc(standfirst)}</p>` : ''}
+          ${briefTools(date, sid, styled, styleBusy)}
+          ${eventsStrip()}
+          ${tplStrip()}
+          <div class="prose digest-body" id="digestBody">${styleBusy && !styled
+            ? `<div class="vl-stream" id="styleStream">${esc(S.styleStream || '')}</div><p class="hint">正在按「${esc(styleName(sid))}」润色…原版内容不会被改动。</p>`
+            : window.renderMarkdown(shownMd)}</div>
+          ${digestEnBlock()}
+          ${matchShell()}
+          <div class="actions"><button class="btn quiet" data-act="digest-en">译成英文</button><button class="btn quiet" data-act="regen">重新生成</button><button class="btn quiet" data-act="open-digests">打开简报文件夹</button></div>
+        </div>
+        ${dockOn() ? '' : `<aside class="today-side" id="todaySide">${sideHTML()}</aside>`}
+      </div>`;
+    decorateDigest($('#digestBody'), date);
     linkTerms($('.digest-body'));
+    if (!S.titles[date]) void loadBriefTitle(date);
+    if (sid !== 'plain' && !styled && !styleBusy && !S.styleFailed[`${date}:${sid}`]) void runStyle(date, sid, false);
+    void loadSide();
     if (S.state.config.matchEnabled !== false) void paintMatch();
     return;
   }
@@ -513,6 +534,7 @@ async function renderToday(host) {
       </div>
       <p class="hint">采集完可以在设置里填一个 API key，让这里直接生成简报；也可以让 DSH 里的 agent 读 inbox 原件来写——那条路能联网核实，写得更准。</p>
     </div>`;
+    mountTodaySide(host);
     return;
   }
 
@@ -532,19 +554,34 @@ async function renderToday(host) {
         ? '会用设置里的模型生成，写完存进 digests/。'
         : '还没有 API key。点上面那个按钮，把一段指令粘到 DSH 对话框里，让 agent 读 inbox 原件并联网核实来写——这条路的判断质量比本地模型高。想去掉这个手工步骤，就到「设置」填一个兼容 OpenAI 的 key。'}</p>
     </div>
+    ${eventsStrip()}
     ${tplStrip()}
     ${matchShell()}`;
+  mountTodaySide(host);
   if (S.state.config.matchEnabled !== false) void paintMatch();
 }
 
-/** 首页顶部的一条入口：给不知道从哪开始的人一个「直接能用」的动作 */
+/** 首页顶部的一条入口：给不知道从哪开始的人一个「直接能用」的动作。用不到的人可以收成一行，或者干脆关掉 */
 function tplStrip() {
   const lib = S.tplLib;
-  if (!lib || !(lib.templates || []).length) return '';
+  const mode = (S.state && S.state.config && S.state.config.tplStrip) || 'open';
+  if (mode === 'off' || !lib || !(lib.templates || []).length) return '';
+  if (mode === 'min') {
+    return `<div class="tstrip is-min">
+      <span class="tstrip-title">想直接做点事？</span>
+      <span class="tstrip-note">模板已收起</span>
+      <button type="button" class="mini" data-act="tstrip" data-v="open">展开</button>
+      <button type="button" class="mini" data-act="tstrip" data-v="off" title="以后在「设置 → 简报页」里能再打开">不再显示</button>
+    </div>`;
+  }
   const picks = lib.templates.slice(0, 6);
   return `<div class="tstrip">
     <div class="tstrip-head"><span class="tstrip-title">想直接做点事？</span>
-      <span class="tstrip-note">填三格就出成品，每个模板都带示例材料</span></div>
+      <span class="tstrip-note">填三格就出成品，每个模板都带示例材料</span>
+      <span class="tstrip-ctl">
+        <button type="button" class="mini" data-act="tstrip" data-v="min" title="收成一行">收起</button>
+        <button type="button" class="mini" data-act="tstrip" data-v="off" title="以后在「设置 → 简报页」里能再打开">×</button>
+      </span></div>
     <div class="tstrip-btns">
       ${picks.map((t) => `<button type="button" class="tbt" data-act="tpl-open" data-id="${esc(t.id)}">${esc(t.title)}</button>`).join('')}
       <button type="button" class="tbt more" data-act="tmpl-all">全部模板</button>
@@ -686,6 +723,7 @@ function renderRadar(host) {
     ['ai', 'AI 项目', d.github?.ai_new?.length || 0],
     ['skills', '技能', d.skills?.total || 0],
     ['models', '模型', (d.models?.openrouter_new?.length || 0) + (d.models?.ollama_new?.length || 0)],
+    ['img', '生图', IMG_KEYS.reduce((n, k) => n + (d.imagegen?.[k]?.length || 0), 0)],
     ['news', '新闻', d.news?.length || 0],
     ['papers', '论文', d.papers?.length || 0],
     ['hn', 'HN', d.hn?.length || 0],
@@ -739,6 +777,8 @@ function renderRadar(host) {
         <p class="repo-desc">${esc(m.desc || '')}</p>
       </div>`).join('')}` : '');
     if (!body) body = emptyNote();
+  } else if (S.radarTab === 'img') {
+    body = renderImageBody(d);
   } else if (S.radarTab === 'news') {
     const news = (d.news || []).filter((n) => passFilter(n.link));
     const bySrc = new Map();
@@ -754,7 +794,7 @@ function renderRadar(host) {
         <h3 class="row-title"><a href="${esc(n.link)}" data-ext="1" data-url="${esc(n.link)}">${esc(n.title)}</a>${transBtn(n.link, n.title)}</h3>
         ${n.summary ? `<p class="row-sum">${esc(n.summary)}</p>` : ''}
         ${transOf(n.link) && transOf(n.link).show ? `<p class="row-sum zh">${esc(transOf(n.link).zh)}</p>` : ''}
-        ${ucBtn({ url: n.link, title: n.title, desc: n.summary, source: n.src }, 'news')}${saveBtn({ url: n.link, title: n.title, kind: 'news', date: n.last_seen || S.date })}
+        ${ucBtn({ url: n.link, title: n.title, desc: n.summary, source: n.src }, 'news')}${evBtns({ url: n.link, title: n.title, summary: n.summary, source: n.source || src, date: n.date || n.last_seen || '' })}${saveBtn({ url: n.link, title: n.title, kind: 'news', date: n.last_seen || S.date })}
       </div>`).join('')}`).join('') || emptyNote();
   } else if (S.radarTab === 'papers') {
     body = (d.papers || []).filter((p) => passFilter(p.link)).map((p) => `<div class="row${rtClass(p.link)}" data-nav="link" data-url="${esc(p.link)}" data-title="${esc(p.title)}">
@@ -770,7 +810,7 @@ function renderRadar(host) {
       <h3 class="row-title"><a href="${esc(h.url || h.hn)}" data-ext="1" data-url="${esc(h.url || h.hn)}">${esc(h.title)}</a>${transBtn(h.url || h.hn, h.title)}</h3>
       ${transOf(h.url || h.hn) && transOf(h.url || h.hn).show ? `<p class="row-sum zh">${esc(transOf(h.url || h.hn).zh)}</p>` : ''}
       <div class="row-meta">${num(h.points)} pts · ${num(h.comments)} 条评论 · <a href="${esc(h.hn)}" data-ext="1">讨论</a></div>
-      ${ucBtn({ url: h.url || h.hn, title: h.title, desc: h.title }, 'hn')}${saveBtn({ url: h.url || h.hn, title: h.title, kind: 'hn', date: h.last_seen || S.date })}
+      ${ucBtn({ url: h.url || h.hn, title: h.title, desc: h.title }, 'hn')}${evBtns({ url: h.url || h.hn, title: h.title, summary: '', source: 'Hacker News', date: h.last_seen || '' })}${saveBtn({ url: h.url || h.hn, title: h.title, kind: 'hn', date: h.last_seen || S.date })}
     </div>`).join('') || emptyNote();
   } else if (S.radarTab === 'soc') {
     const bi = (d.bilibili?.items || []).filter((v) => passFilter(v.url));
@@ -784,12 +824,12 @@ function renderRadar(host) {
       <div class="row-src">B站 · ${esc(v.why || '')}${v.date ? ' · ' + esc(v.date) : ''}</div>
       <h3 class="row-title"><a href="${esc(v.url)}" data-ext="1" data-url="${esc(v.url)}">${esc(v.title)}</a></h3>
       <div class="row-meta">${esc(v.author || '')}${v.play ? ' · ' + shortNum(v.play) + ' 播放' : ''}${v.danmaku ? ' · ' + shortNum(v.danmaku) + ' 弹幕' : ''}${v.tname ? ' · ' + esc(v.tname) : ''}</div>
-      ${ucBtn({ url: v.url, title: v.title, desc: v.why, source: v.author }, 'video')}${saveBtn({ url: v.url, title: v.title, kind: 'video', date: v.date || v.last_seen || S.date })}
+      ${ucBtn({ url: v.url, title: v.title, desc: v.why, source: v.author }, 'video')}${vlBtns(v.url, v.title)}${saveBtn({ url: v.url, title: v.title, kind: 'video', date: v.date || v.last_seen || S.date })}
     </div>`).join('');
     const zhRows = zh.map((z) => `<div class="row${rtClass(z.url)}" data-nav="link" data-url="${esc(z.url)}" data-title="${esc(z.title)}">
       <div class="row-src">知乎热榜${z.heat ? ' · ' + esc(z.heat) : ''}${z.last_seen ? ' · ' + esc(String(z.last_seen).slice(5)) : ''}</div>
       <h3 class="row-title"><a href="${esc(z.url)}" data-ext="1" data-url="${esc(z.url)}">${esc(z.title)}</a></h3>
-      ${ucBtn({ url: z.url, title: z.title, desc: z.heat }, 'zhihu')}${saveBtn({ url: z.url, title: z.title, kind: 'zhihu', date: z.last_seen || S.date })}
+      ${ucBtn({ url: z.url, title: z.title, desc: z.heat }, 'zhihu')}${evBtns({ url: z.url, title: z.title, summary: z.heat || '', source: '知乎', date: z.last_seen || '' })}${saveBtn({ url: z.url, title: z.title, kind: 'zhihu', date: z.last_seen || S.date })}
     </div>`).join('');
     body = lead +
       (bi.length ? head('B站', `${bi.length} 条`) + biRows : '') +
@@ -818,6 +858,82 @@ function renderRadar(host) {
     </div>
     ${summaryBlock()}
     <div class="radar-body">${body}</div>`;
+}
+
+/* ------------------------------------------------------- AI 生图与工作流 */
+
+const IMG_KEYS = ['models', 'api_models', 'workflows', 'community', 'projects', 'videos'];
+
+/** 沿用上一份 / 跨天合并时「最近哪天出现」 */
+function imgSeen(x) {
+  if (x.carried_over) return '<span>沿用上一份</span>';
+  return S.range !== 'today' && x.last_seen ? `<span>最近 ${esc(String(x.last_seen).slice(5))} 出现${x.seen_days > 1 ? ' · ' + x.seen_days + ' 天' : ''}</span>` : '';
+}
+
+function imgHfRow(m) {
+  return `<div class="repo${rtClass(m.url)}" data-nav="link" data-url="${esc(m.url)}" data-title="${esc(m.name)}">
+    <a class="repo-name" href="${esc(m.url)}" data-ext="1" data-url="${esc(m.url)}">${esc(m.name)}</a>
+    <div class="num">${shortNum(m.likes)}<span>赞</span></div>
+    <div class="num">${shortNum(m.downloads)}<span>下载</span></div>
+    ${saveBtn({ url: m.url, title: m.name, kind: 'model', date: m.last_seen || S.date })}
+    <p class="repo-desc">${esc([m.task, m.base ? '基于 ' + m.base : '', m.lib].filter(Boolean).join(' · '))}</p>
+    <div class="repo-uc">${ucBtn({ url: m.url }, 'model')}</div>
+    <div class="repo-tag"><span>${esc(m.created ? m.created + ' 建' : '')}</span><span>${esc(m.license ? '许可 ' + m.license : '')}</span>${imgSeen(m)}</div>
+  </div>`;
+}
+
+function imgApiRow(m) {
+  return `<div class="repo${rtClass(m.url)}" data-nav="link" data-url="${esc(m.url)}" data-title="${esc(m.name)}">
+    <a class="repo-name" href="${esc(m.url)}" data-ext="1" data-url="${esc(m.url)}">${esc(m.name)}</a>
+    <div class="num">${m.image_price != null ? '$' + esc(m.image_price) : '—'}<span>出图/Mtok</span></div>
+    <div class="num">${esc(String(m.created || '').slice(5) || '—')}<span>上架</span></div>
+    ${saveBtn({ url: m.url, title: m.name, kind: 'model', date: m.last_seen || S.date })}
+    <p class="repo-desc">${esc(m.id)}</p>
+    <div class="repo-uc">${ucBtn({ url: m.url }, 'model')}</div>
+    <div class="repo-tag"><span>${esc(m.modality || '')}</span>${imgSeen(m)}</div>
+  </div>`;
+}
+
+function imgCivitaiRow(w) {
+  return `<div class="repo${rtClass(w.url)}" data-nav="link" data-url="${esc(w.url)}" data-title="${esc(w.name)}">
+    <a class="repo-name" href="${esc(w.url)}" data-ext="1" data-url="${esc(w.url)}">${esc(w.name)}</a>
+    <div class="num">${shortNum(w.downloads)}<span>下载</span></div>
+    <div class="num">${shortNum(w.likes)}<span>赞</span></div>
+    ${saveBtn({ url: w.url, title: w.name, kind: 'image', date: w.last_seen || S.date })}
+    <p class="repo-desc">${esc([w.type === 'Workflows' ? '' : w.type, w.base ? '底模 ' + w.base : '', w.creator ? '作者 ' + w.creator : ''].filter(Boolean).join(' · '))}</p>
+    <div class="repo-uc">${ucBtn({ url: w.url }, 'model')}</div>
+    <div class="repo-tag"><span>${esc(w.published ? w.published + ' 更新' : '')}</span>${w.commercial ? '<span>允许商用出图</span>' : ''}<span>${esc((w.tags || []).slice(0, 4).join(' / '))}</span>${imgSeen(w)}</div>
+  </div>`;
+}
+
+function imgVideoRow(v) {
+  return `<div class="row${rtClass(v.url)}" data-nav="link" data-url="${esc(v.url)}" data-title="${esc(v.title)}">
+    <div class="row-src">B站 · ${esc(v.why || '')}${v.date ? ' · ' + esc(v.date) : ''}</div>
+    <h3 class="row-title"><a href="${esc(v.url)}" data-ext="1" data-url="${esc(v.url)}">${esc(v.title)}</a></h3>
+    <div class="row-meta">${esc(v.author || '')}${v.play ? ' · ' + shortNum(v.play) + ' 播放' : ''}</div>
+    ${ucBtn({ url: v.url }, 'video')}${vlBtns(v.url, v.title)}${saveBtn({ url: v.url, title: v.title, kind: 'video', date: v.date || v.last_seen || S.date })}
+  </div>`;
+}
+
+function renderImageBody(d) {
+  const ig = d.imagegen || {};
+  const lead = `<p class="hint keep" style="margin-top:18px;max-width:66ch">文生图、图像编辑和出图工作流。
+    模型看 Hugging Face 热度（是多少人在点，不等于出图好坏），API 看 OpenRouter 上能直接出图的，
+    工作流和 LoRA 看 Civitai 本周下载（只收 PG / PG-13、不是真人肖像的），代码看 GitHub，中文教程看 B站。
+    要商用先点进去看许可。</p>`;
+  const nodes = (ig.projects || []).filter((r) => r.group === 'ComfyUI 节点');
+  const projs = (ig.projects || []).filter((r) => r.group !== 'ComfyUI 节点');
+  const vids = (ig.videos || []).filter((v) => passFilter(v.url));
+  const body = [
+    group('新模型 · Hugging Face 热度', ig.models, '文生图与图像编辑，按热度', 200, imgHfRow),
+    group('API 直接出图 · OpenRouter', ig.api_models, '按上架时间；价格是每百万图像 token', 200, imgApiRow),
+    group('工作流 · Civitai', ig.workflows, '本周下载最多；数字是累计', 200, imgCivitaiRow),
+    group('社区模型与 LoRA · Civitai', ig.community, 'Checkpoint / LoRA，本周下载最多', 200, imgCivitaiRow),
+    group('ComfyUI 节点 · GitHub', nodes, '近 90 天新建、这周还在更新', 200, repoRow),
+    group('开源生图项目 · GitHub', projs, '近 30 天新建，按日均 ★', 200, repoRow),
+    vids.length ? `<h2 class="grp-head">中文教程 · B站<span class="hint">30 天内、播放过 800</span></h2>${vids.map(imgVideoRow).join('')}` : '',
+  ].join('');
+  return lead + (body || emptyNote());
 }
 
 /* ------------------------------------------------------- 前沿动态：AI 又能做什么了 */
@@ -1108,6 +1224,7 @@ function findItem(url, kind) {
   if (d.github) pools.push(d.github.new_repos, d.github.active, d.github.ai_new, d.github.velocity);
   if (d.models) pools.push(d.models.openrouter_new, d.models.ollama_new);
   pools.push(d.news, d.papers, d.hn, d.bilibili && d.bilibili.items, d.zhihu && d.zhihu.items);
+  for (const src of [d.imagegen, S.agg && S.agg.imagegen]) for (const k of IMG_KEYS) pools.push(src && src[k]);
   if (S.agg && S.agg.data) {
     const a = S.agg.data;
     if (a.github) pools.push(a.github.new_repos, a.github.active, a.github.ai_new);
@@ -1149,7 +1266,7 @@ async function openUsecase(url, kind) {
   S.uc.data = null;
   S.uc.err = '';
   S.uc.followed = false;
-  S.uc.kindLabel = ({ repo: '项目', model: '模型', news: '新闻', paper: '论文', hn: 'HN', video: 'B站', zhihu: '知乎' }[item.kind]) || '资讯';
+  S.uc.kindLabel = ({ repo: '项目', model: '模型', news: '新闻', paper: '论文', hn: 'HN', video: 'B站', zhihu: '知乎', image: '生图' }[item.kind]) || '资讯';
   renderUsecase();
   try {
     const r = await api.usecase(item);
@@ -1230,6 +1347,107 @@ function renderUsecase() {
     </div>
     ${d && !d.generated ? '<p class="sdoc-note">没填 API key：上面四段是按采集字段拼的，没做模型总结。</p>' : ''}
   `;
+  requestAnimationFrame(() => el.classList.add('is-open'));
+}
+
+/* ───────────── 视频学习：AI 概括 / AI 笔记 / AI 总结 ───────────── */
+
+const VL_MODES = { overview: 'AI 概括', notes: 'AI 笔记' };
+const bvidOfUrl = (u) => (String(u || '').match(/BV[0-9A-Za-z]{10}/) || [])[0] || '';
+
+/** 视频行上的两个按钮 */
+function vlBtns(url, title) {
+  if (!bvidOfUrl(url)) return '';
+  return ['overview', 'notes'].map((m) =>
+    `<button class="mini vl-btn" type="button" data-act="vl-open" data-mode="${m}" data-url="${esc(url)}" data-title="${esc(title || '')}">${VL_MODES[m]}</button>`).join('');
+}
+
+async function openVideoAI(url, title, mode, force) {
+  S.vl = { open: true, kind: 'video', url, title: title || '', at: '', mode, busy: true, stream: '', data: null, err: '' };
+  renderVL();
+  const r = await api.videoAi({ url, mode, force: !!force });
+  if (!S.vl.open || S.vl.kind !== 'video' || S.vl.url !== url || S.vl.mode !== mode) return;
+  S.vl.busy = false;
+  if (r && r.ok) { S.vl.data = r; S.vl.title = r.title || S.vl.title; }
+  else S.vl.err = (r && r.error) || '没生成出来';
+  renderVL();
+}
+
+async function openVideoSummary(at, force) {
+  const m = (S.chat.msgs || []).find((x) => x.role === 'assistant' && x.at === at);
+  S.vl = { open: true, kind: 'sum', url: '', title: `${(m && m.videoTopic) || '这几条教程'} · 学习路线`, at, mode: 'summary', busy: true, stream: '', data: null, err: '' };
+  renderVL();
+  const r = await api.videoSummary({ at, force: !!force });
+  if (!S.vl.open || S.vl.kind !== 'sum' || S.vl.at !== at) return;
+  S.vl.busy = false;
+  if (r && r.ok) {
+    S.vl.data = r;
+    if (m) { m.videoSummary = { text: r.text, at: r.at, count: r.count }; if (S.view === 'chat') paintTutor(at); }
+  } else S.vl.err = (r && r.error) || '没生成出来';
+  renderVL();
+}
+
+function closeVL() {
+  S.vl.open = false;
+  const el = document.getElementById('vlearn');
+  if (el) {
+    el.classList.remove('is-open');
+    setTimeout(() => { if (!S.vl.open) el.hidden = true; }, 180);
+  }
+}
+
+function renderVL() {
+  const el = document.getElementById('vlearn');
+  if (!el || !S.vl.open) return;
+  const box = el.querySelector('.sdoc-box');
+  const v = S.vl;
+  const d = v.data;
+  const meta = d && d.meta
+    ? [d.meta.owner, d.meta.duration ? '时长 ' + d.meta.duration : '', d.meta.parts > 1 ? d.meta.parts + ' P' : '', d.meta.view ? shortNum(d.meta.view) + ' 播放' : '', d.meta.pubdate].filter(Boolean).join(' · ')
+    : '';
+  const tabs = v.kind === 'video'
+    ? `<div class="tabs vl-tabs">${Object.entries(VL_MODES).map(([k, label]) =>
+        `<button class="tab${v.mode === k ? ' is-on' : ''}" type="button" data-act="vl-mode" data-mode="${k}">${label}</button>`).join('')}</div>`
+    : '';
+  const basis = d && d.basisLabel
+    ? `<div class="ucev ucev-${d.basis === 'meta' ? 'community' : 'report'}"><strong>依据</strong><span>${esc(d.basisLabel)}${d.basis === 'meta'
+        ? (d.loggedIn ? '。这条视频本身没有字幕。' : '。在「设置」里填上 B站 登录 Cookie 就能读字幕，会准很多。')
+        : ''}</span></div>`
+    : '';
+  let body = '';
+  if (v.busy) {
+    body = v.stream
+      ? `<div class="vl-stream">${esc(v.stream)}</div>`
+      : `<p class="sdoc-note">${v.kind === 'sum' ? '正在读这几条视频的简介和已有的概括…' : '正在取视频的简介、分P目录、评论和字幕…'}</p>`;
+  } else if (v.err) {
+    body = `<p class="sdoc-err">${esc(v.err)}</p>`;
+  } else if (d) {
+    body = `<div class="prose vl-body">${window.renderMarkdown(d.text || '')}</div>`;
+  }
+  const when = d && d.at ? (() => {
+    const t = new Date(d.at);
+    const p = (n) => String(n).padStart(2, '0');
+    return Number.isNaN(t.getTime()) ? '' : `${t.getMonth() + 1}月${t.getDate()}日 ${p(t.getHours())}:${p(t.getMinutes())}`;
+  })() : '';
+  const acts = d && !v.busy
+    ? `<div class="sdoc-actions">
+        <button class="btn" type="button" data-act="vl-copy">复制</button>
+        ${v.kind === 'video' ? '<button class="btn" type="button" data-act="vl-save">存为 Markdown</button><button class="btn quiet" type="button" data-act="vl-notes-dir">打开笔记文件夹</button>' : ''}
+        <button class="btn quiet" type="button" data-act="vl-redo">重新生成</button>
+        ${v.url ? `<a class="btn quiet" href="${esc(v.url)}" data-ext="1" data-url="${esc(v.url)}">去看视频</a>` : ''}
+      </div>
+      <p class="sdoc-note">${when ? '生成于 ' + esc(when) : ''}${d.cached ? ' · 之前生成过，直接用的缓存，没花钱' : ''}。AI 写的，关键步骤以视频为准。</p>`
+    : '';
+  box.innerHTML = `
+    <div class="sdoc-head">
+      <div>
+        <h2 class="sdoc-title">${esc(v.title || '视频')}</h2>
+        <div class="sdoc-src">${v.kind === 'sum' ? 'AI 总结 · 把这几条串成学习路线' : 'B站'}${meta ? ' · ' + esc(meta) : ''}</div>
+      </div>
+      <button class="sdoc-x" type="button" data-act="vl-close" aria-label="关闭">×</button>
+    </div>
+    ${tabs}${basis}${body}${acts}`;
+  el.hidden = false;
   requestAnimationFrame(() => el.classList.add('is-open'));
 }
 
@@ -2299,7 +2517,43 @@ function msgHTML(m, i, total, busy) {
     ? `<div class="msrc"><span class="msrc-label">联网搜到</span>${m.web.slice(0, 4).map((w) =>
         `<a class="msrc-item" data-ext="1" href="${esc(w.url)}" title="${esc(w.title || '')}">${esc(w.host || hostOf(w.url))}</a>`).join('')}</div>`
     : '';
-  return `<div class="msg ai"><div class="prose">${think}${window.renderMarkdown(parts.body)}</div>${src}</div>`;
+  return `<div class="msg ai"><div class="prose">${think}${window.renderMarkdown(parts.body)}</div>${src}${tutorBlock(m)}</div>`;
+}
+
+/** 回答下面的教程视频：找到就列出来；没配或没找到，给一个「找相关教程视频」按钮 */
+function tutorBlock(m) {
+  if (!m.at) return '';
+  const at = esc(m.at);
+  if (m.videoBusy) {
+    return `<div class="mvid" data-vat="${at}"><div class="mvid-head"><span class="msrc-label">教程视频</span><span class="hint">正在去 B站找相关教程…</span></div></div>`;
+  }
+  if (Array.isArray(m.videos) && m.videos.length) {
+    const qs = (m.videoQueries || []).map((q) => '「' + esc(q) + '」').join('');
+    return `<div class="mvid" data-vat="${at}">
+      <div class="mvid-head"><span class="msrc-label">教程视频</span><span class="hint">B站${m.videoTopic ? ' · ' + esc(m.videoTopic) : ''}${qs ? ' · 搜了' + qs : ''}</span>${m.videos.length > 1
+        ? `<button class="mini vl-sum" type="button" data-act="vl-sum" data-at="${at}">${m.videoSummary ? '看 AI 总结' : 'AI 总结这几条'}</button>`
+        : ''}</div>
+      ${m.videos.map((v) => `<div class="mvid-row${rtClass(v.url)}">
+        <a class="mvid-title" data-ext="1" data-url="${esc(v.url)}" href="${esc(v.url)}">${esc(v.title)}</a>
+        <span class="mvid-meta">${esc([v.author, v.play ? shortNum(v.play) + ' 播放' : '', v.duration ? '时长 ' + v.duration : '', v.date].filter(Boolean).join(' · '))}</span>
+        <div class="mvid-acts">${vlBtns(v.url, v.title)}</div>
+        ${saveBtn({ url: v.url, title: v.title, kind: 'video', date: v.date || S.date })}
+      </div>`).join('')}
+    </div>`;
+  }
+  const missed = Array.isArray(m.videos) && (m.videoQueries || []).length;
+  return `<div class="mvid mvid-off" data-vat="${at}"><button type="button" class="mini" data-act="tutor-find" data-at="${at}">找相关教程视频</button>${missed ? '<span class="hint">刚才搜了，没有够格的</span>' : ''}</div>`;
+}
+
+/** 只换掉那一块，不整页重画（重画会冲掉输入框里正在打的字） */
+function paintTutor(at) {
+  const m = (S.chat.msgs || []).find((x) => x.role === 'assistant' && x.at === at);
+  const el = document.querySelector(`.mvid[data-vat="${CSS.escape(at)}"]`);
+  if (!m || !el) return;
+  const th = document.getElementById('thread');
+  const atBottom = th && th.scrollHeight - th.scrollTop - th.clientHeight < 40;
+  el.outerHTML = tutorBlock(m);
+  if (th && atBottom) th.scrollTop = th.scrollHeight;
 }
 
 async function renderChat(host) {
@@ -2377,6 +2631,8 @@ async function sendChat(text) {
   if (res && res.ok) {
     S.chat.msgs[S.chat.msgs.length - 1].content = res.reply || S.chat.stream;
     if (Array.isArray(res.web)) S.chat.msgs[S.chat.msgs.length - 1].web = res.web;
+    if (res.at) S.chat.msgs[S.chat.msgs.length - 1].at = res.at;
+    if (res.tutoring) S.chat.msgs[S.chat.msgs.length - 1].videoBusy = true;
   } else {
     S.chat.msgs.splice(-2, 2);
     toast(res?.error || '发送失败', true);
@@ -2429,6 +2685,7 @@ async function doKeyTest() {
 
 function renderSettings(host) {
   const c = S.state.config;
+  setTimeout(fillVoices, 0);
   host.innerHTML = `
     ${stampLine()}
     <div class="radar-head"><h1>设置</h1><span class="count">接口、定时采集、提醒与本机数据</span></div>
@@ -2461,6 +2718,17 @@ function renderSettings(host) {
           <p class="hint">填完先点上面的「测一下」，通了再点下面「保存设置」。</p>
         </div>
         <div class="hint">只存在本机 app/config.json，不上传。不填也能用——在 DSH 里让 agent 写，那条路还能联网核实。</div>
+      </div>
+    </div>
+    <div class="field">
+      <label for="s-bili">B站 登录 Cookie</label>
+      <div class="control">
+        <div class="inline">
+          <input id="s-bili" type="password" placeholder="${c.hasBili ? '已保存，要换就粘新的' : '可选：SESSDATA 的值'}" spellcheck="false" style="max-width:260px" />
+          ${c.hasBili ? '<button class="btn quiet" data-act="clear-bili">清除</button>' : ''}
+        </div>
+        <div class="hint">可选。填了，视频的「AI 概括 / AI 笔记」才读得到字幕和 B站 自带的 AI 总结；不填也能用，但只能按简介、分P目录和评论推断。
+          取法：浏览器登录 bilibili.com → F12 → Application → Cookies → 复制 SESSDATA 的值。它等于你的 B站 登录凭证：只存在本机 app/config.json，别发给别人；退出 B站 登录后它就失效。</div>
       </div>
     </div>
     <div class="field">
@@ -2511,6 +2779,16 @@ function renderSettings(host) {
       </div>
     </div>
     <div class="field">
+      <label>界面缩放</label>
+      <div class="control">
+        <div class="seg" role="radiogroup" aria-label="界面缩放">
+          ${[['auto', '自动'], ['1', '100%'], ['1.15', '115%'], ['1.3', '130%'], ['1.5', '150%']].map(([k, label]) =>
+            `<button class="segbtn${zoomPref() === k ? ' on' : ''}" type="button" role="radio" aria-checked="${zoomPref() === k}" data-act="zoom" data-zoom="${k}">${label}</button>`).join('')}
+        </div>
+        <div class="hint keep">现在是 ${Math.round(zoomNow() * 100)}%。「自动」按窗口宽度放大：窗口不宽时保持 100%，2K 屏全屏约 135%，最多 150%。窗口够宽时，每一页右边都会常驻一列：听日报、追踪中的事件、便利贴、B站（每节标题点一下能收起）。也可以按 Ctrl + 加号 / 减号临时调，Ctrl + 0 回到自动。只记在这台电脑上。</div>
+      </div>
+    </div>
+    <div class="field">
       <label>过渡动画</label>
       <div class="control">
         <div class="seg" role="radiogroup" aria-label="过渡动画">
@@ -2532,8 +2810,58 @@ function renderSettings(host) {
       <div class="control">
         <div class="inline">
           <label class="check"><input id="s-web" type="checkbox" ${c.webSearch !== false ? 'checked' : ''} /> 对话时先联网搜一次，把结果当材料</label>
+          <label class="check"><input id="s-tutor" type="checkbox" ${c.tutorVideos !== false ? 'checked' : ''} /> 问到某个领域怎么学、怎么做时，在回答下面推荐几条 B站 教程视频（每次多一次很小的模型调用）</label>
         </div>
         <div class="hint">走 Bing 的 RSS，不用另外的 key。搜的是你这句话本身，结果会标在回答下面（点得开）。关掉就只用本机采集的材料——更快、更便宜，但新发布的东西它不知道。</div>
+      </div>
+    </div>
+    <div class="field">
+      <label>简报页</label>
+      <div class="control">
+        <label class="check"><input id="s-tstrip" type="checkbox" ${(c.tplStrip || 'open') !== 'off' ? 'checked' : ''} /> 在简报上方显示「想直接做点事？」模板入口（简报页里也能直接收起或关掉）</label>
+      </div>
+    </div>
+    <div class="field">
+      <label>文字风格</label>
+      <div class="control">
+        <div class="inline">
+          <select id="s-style">${(S.styles || [{ id: 'plain', name: '原样' }]).map((x) => `<option value="${esc(x.id)}"${x.id === (c.briefStyle || 'plain') ? ' selected' : ''}>${esc(x.name)}${x.desc ? ' — ' + esc(x.desc) : ''}</option>`).join('')}</select>
+          <button class="btn quiet" type="button" data-act="style-new">自定义风格</button>
+          <button class="btn quiet" type="button" data-act="open-styles-dir">打开风格文件夹</button>
+        </div>
+        <label class="check" style="margin-top:8px"><input id="s-autostyle" type="checkbox" ${c.autoStyle ? 'checked' : ''} /> 生成简报后自动按这个风格润色一遍（原版照样保留，简报页随时能切回原版）</label>
+        <div class="hint">先把简报按固定格式老老实实写好，再单独润一遍色：事实、数字、链接和小节一律不动，只改说法。自己的风格存在 styles/ 文件夹，每个风格一个 .md（开头写 name 和 description，正文写文风要求，和 SKILL.md 一个写法），拷给别人就能用。</div>
+      </div>
+    </div>
+    <div class="field">
+      <label>听日报</label>
+      <div class="control">
+        <div class="seg" role="radiogroup" aria-label="语音引擎">
+          ${[['system', '系统语音（免费、离线）'], ['api', '自定义语音接口']].map(([k, label]) =>
+            `<button class="segbtn${(c.ttsEngine || 'system') === k ? ' on' : ''}" type="button" role="radio" aria-checked="${(c.ttsEngine || 'system') === k}" data-act="tts-engine" data-v="${k}">${label}</button>`).join('')}
+        </div>
+        <div class="tts-grid">
+          <label><span class="rlabel">系统语音</span><select id="s-ttsvoice"><option value="">自动（挑中文语音）</option></select></label>
+          <label><span class="rlabel">语速</span><input id="s-ttsrate" type="range" min="0.6" max="2" step="0.1" value="${esc(c.ttsRate || 1)}" /><span class="hint" id="ttsRateVal">${esc(c.ttsRate || 1)}×</span></label>
+          <label><span class="rlabel">音调</span><input id="s-ttspitch" type="range" min="0.5" max="1.5" step="0.1" value="${esc(c.ttsPitch || 1)}" /></label>
+          <label><span class="rlabel">音量</span><input id="s-ttsvol" type="range" min="0" max="1" step="0.1" value="${esc(c.ttsVolume ?? 1)}" /></label>
+        </div>
+        <div class="tts-api"${(c.ttsEngine || 'system') === 'api' ? '' : ' hidden'}>
+          <div class="inline">
+            <input id="s-ttsbase" type="text" placeholder="接口地址；空 = 用上面的 API 服务地址" value="${esc(c.ttsBase || '')}" spellcheck="false" style="max-width:300px" />
+            <input id="s-ttsmodel" type="text" placeholder="模型，如 tts-1" value="${esc(c.ttsModel || 'tts-1')}" spellcheck="false" style="max-width:150px" />
+            <input id="s-ttsapivoice" type="text" placeholder="声音，如 alloy" value="${esc(c.ttsApiVoice || 'alloy')}" spellcheck="false" style="max-width:150px" />
+          </div>
+          <div class="inline" style="margin-top:6px">
+            <input id="s-ttskey" type="password" placeholder="${c.hasTtsKey ? '已保存，要换就输入新的' : '语音接口 key；空 = 用上面的 API key'}" spellcheck="false" style="max-width:260px" />
+            ${c.hasTtsKey ? '<button class="btn quiet" type="button" data-act="clear-ttskey">清除</button>' : ''}
+          </div>
+          <div class="hint">任何兼容 OpenAI <code>/audio/speech</code> 的接口都行（OpenAI、硅基流动，或者自己搭的 Kokoro / CosyVoice 服务）；声音名按那家的文档填。DeepSeek 没有语音接口。只存在本机 app/config.json。</div>
+        </div>
+        <div class="inline" style="margin-top:8px">
+          <button class="btn quiet" type="button" data-act="tts-test">试听一句</button>
+          <span class="hint" style="margin:0">先「保存设置」再试听才用新设置。系统语音里没有中文的话：Windows 设置 → 时间和语言 → 语音，添加一个中文语音。</span>
+        </div>
       </div>
     </div>
     <div class="field">
@@ -2589,14 +2917,14 @@ function renderSaved(host) {
     S.follows = [];
   }
   const rows = Object.values(S.aux.bookmarks).sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
-  const label = (k) => ({ repo: '项目', model: '模型', news: '新闻', paper: '论文', hn: 'HN', skill: '技能', video: 'B站', zhihu: '知乎' }[k] || '链接');
+  const label = (k) => ({ repo: '项目', model: '模型', news: '新闻', paper: '论文', hn: 'HN', skill: '技能', video: 'B站', zhihu: '知乎', image: '生图' }[k] || '链接');
   host.innerHTML = `${stampLine()}
     <div class="radar-head" style="margin-top:22px"><h1>收藏</h1><span class="count">${rows.length} 条 · ${(S.follows || []).length} 条关注后续</span></div>
     ${(S.follows && S.follows.length) ? `<div style="margin-top:26px">
       <h2 class="src-head">关注后续<span class="hint" style="margin-left:10px;font-weight:400">${S.follows.length} 条记录</span></h2>
       <p class="hint keep" style="margin-top:8px">这些当时没有能直接上手的模板。等它们出现可用形态（有教程、有开源实现、能本地跑）时，会在周报里提一句。</p>
       ${S.follows.map((f) => `<div class="row" data-nav="link" data-url="${esc(f.url)}" data-title="${esc(f.title)}">
-        <div class="row-src">${esc(f.kind ? ({ repo: '项目', model: '模型', news: '新闻', paper: '论文', hn: 'HN', video: 'B站', zhihu: '知乎' }[f.kind] || '链接') : '链接')}${f.at ? ' · ' + esc(String(f.at).slice(0, 10)) + ' 记下' : ''}</div>
+        <div class="row-src">${esc(f.kind ? ({ repo: '项目', model: '模型', news: '新闻', paper: '论文', hn: 'HN', video: 'B站', zhihu: '知乎', image: '生图' }[f.kind] || '链接') : '链接')}${f.at ? ' · ' + esc(String(f.at).slice(0, 10)) + ' 记下' : ''}</div>
         <h3 class="row-title"><a href="${esc(f.url)}" data-ext="1" data-url="${esc(f.url)}">${esc(f.title || f.url)}</a></h3>
       </div>`).join('')}
     </div>` : ''}
@@ -3050,9 +3378,9 @@ async function doCollect() {
   renderRail();
 }
 
-/* 采集的进度卡片：采集器每抓完一个源打一行「[radar] step k/12 名称」 */
+/* 采集的进度卡片：采集器每抓完一个源打一行「[radar] step k/13 名称」 */
 function startCollectJob(step) {
-  jobStart('collect', '正在采集今天的资讯', { en: 'Collect', total: 12, live: true, stallAfter: 30, step });
+  jobStart('collect', '正在采集今天的资讯', { en: 'Collect', total: 13, live: true, stallAfter: 30, step });
 }
 
 function collectProgress(line) {
@@ -3755,6 +4083,7 @@ document.addEventListener('click', async (ev) => {
   if (act) {
     ev.preventDefault();
     const a = act.dataset.act;
+    if (await briefAction(a, act)) return;
     if (a === 'collect') { $('#main').scrollTop = 0; doCollect(); }
     else if (a === 'generate') doGenerate();
     else if (a === 'save') { await toggleSave(act.dataset); }
@@ -3878,6 +4207,39 @@ document.addEventListener('click', async (ev) => {
       if (r && r.ok) {
         const chk = await api.skillCheck({ source: (S.sdoc.data && S.sdoc.data.source) || '', id: (S.sdoc.data && S.sdoc.data.id) || '' });
         if (S.sdoc.data && S.sdoc.data.ok) { S.sdoc.data.installed = (chk && chk.installed) || []; renderSkillDoc(); }
+      }
+      return;
+    }
+    else if (a === 'vl-open') { openVideoAI(act.dataset.url || '', act.dataset.title || '', act.dataset.mode || 'overview'); return; }
+    else if (a === 'vl-sum') { openVideoSummary(act.dataset.at || ''); return; }
+    else if (a === 'vl-close') { closeVL(); return; }
+    else if (a === 'vl-mode') { if (S.vl.kind === 'video' && act.dataset.mode !== S.vl.mode) openVideoAI(S.vl.url, S.vl.title, act.dataset.mode); return; }
+    else if (a === 'vl-redo') {
+      if (S.vl.kind === 'sum') openVideoSummary(S.vl.at, true);
+      else openVideoAI(S.vl.url, S.vl.title, S.vl.mode, true);
+      return;
+    }
+    else if (a === 'vl-copy') { if (S.vl.data) { await api.copy(S.vl.data.text || ''); toast('已复制（Markdown）'); } return; }
+    else if (a === 'vl-save') {
+      const r = await api.videoSaveNote(S.vl.url);
+      toast(r && r.ok ? `已存到 notes/${r.name}` : (r && r.error) || '没存成', !(r && r.ok));
+      return;
+    }
+    else if (a === 'vl-notes-dir') { await api.openFolder('notes'); return; }
+    else if (a === 'clear-bili') { await api.saveSettings({ clearBili: true }); toast('已清除 B站 Cookie'); await refresh(); return; }
+    else if (a === 'tutor-find') {
+      const at = act.dataset.at || '';
+      const m = (S.chat.msgs || []).find((x) => x.role === 'assistant' && x.at === at);
+      if (!m || m.videoBusy) return;
+      m.videoBusy = true;
+      paintTutor(at);
+      const r = await api.chatTutor(at);
+      if (!r || !r.ok) {
+        m.videoBusy = false;
+        paintTutor(at);
+        toast((r && r.error) || '没找成', true);
+      } else if (!(r.videos || []).length) {
+        toast('B站上没搜到够格的教程（播放太少或太老的都筛掉了）。');
       }
       return;
     }
@@ -4014,12 +4376,27 @@ document.addEventListener('click', async (ev) => {
         summaryAll: $('#s-sum') ? $('#s-sum').checked : undefined,
         compact: $('#s-compact') ? $('#s-compact').checked : undefined,
         webSearch: $('#s-web') ? $('#s-web').checked : undefined,
+        tutorVideos: $('#s-tutor') ? $('#s-tutor').checked : undefined,
         autoUpdateCheck: $('#s-autoupd') ? $('#s-autoupd').checked : undefined,
         priceIn: $('#s-pin') ? $('#s-pin').value : undefined,
         priceOut: $('#s-pout') ? $('#s-pout').value : undefined,
       };
       const key = $('#s-key').value.trim();
       if (key) patch.apiKey = key;
+      const bili = $('#s-bili') ? $('#s-bili').value.trim() : '';
+      if (bili) patch.biliSessdata = bili;
+      if ($('#s-tstrip')) patch.tplStrip = $('#s-tstrip').checked ? (S.state.config.tplStrip === 'off' ? 'open' : S.state.config.tplStrip) : 'off';
+      if ($('#s-style')) patch.briefStyle = $('#s-style').value;
+      if ($('#s-autostyle')) patch.autoStyle = $('#s-autostyle').checked;
+      if ($('#s-ttsvoice')) patch.ttsVoice = $('#s-ttsvoice').value;
+      if ($('#s-ttsrate')) patch.ttsRate = Number($('#s-ttsrate').value);
+      if ($('#s-ttspitch')) patch.ttsPitch = Number($('#s-ttspitch').value);
+      if ($('#s-ttsvol')) patch.ttsVolume = Number($('#s-ttsvol').value);
+      if ($('#s-ttsbase')) patch.ttsBase = $('#s-ttsbase').value.trim();
+      if ($('#s-ttsmodel')) patch.ttsModel = $('#s-ttsmodel').value.trim();
+      if ($('#s-ttsapivoice')) patch.ttsApiVoice = $('#s-ttsapivoice').value.trim();
+      const ttsKey = $('#s-ttskey') ? $('#s-ttskey').value.trim() : '';
+      if (ttsKey) patch.ttsKey = ttsKey;
       const r = await api.saveSettings(patch);
       if (r.ok) { toast('已保存'); await refresh(); if (S.usage) S.usage = await api.usage(); }
     }
@@ -4163,6 +4540,8 @@ document.addEventListener('keydown', (e) => {
       if (S.dict.mode !== 'list') { dictBack(); e.preventDefault(); return; }
       if (S.dict.q) { S.dict.q = ''; const q = $('#dictQ'); if (q) q.value = ''; dictRepaint(); e.preventDefault(); return; }
     }
+    if (S.ed.open) { edClose(); e.preventDefault(); return; }
+    if (S.vl.open) { closeVL(); e.preventDefault(); return; }
     if (S.sdoc.open) { closeSkillDoc(); e.preventDefault(); return; }
     if (!$('#termcard').hidden) { closeTerm(); e.preventDefault(); return; }
     if (!$('#spot').hidden) { closeSpot(); e.preventDefault(); return; }
@@ -4243,6 +4622,24 @@ api.onChatDelta(({ text }) => {
   const box = document.getElementById('streamBox');
   if (box) box.textContent = S.chat.stream;
 });
+api.onVideoDelta(({ key, text }) => {
+  const v = S.vl;
+  if (!v.open || !v.busy) return;
+  const want = v.kind === 'sum' ? `sum:${v.at}` : `${bvidOfUrl(v.url)}:${v.mode}`;
+  if (key !== want) return;
+  v.stream += text;
+  const box = document.querySelector('#vlearn .vl-stream');
+  if (box) box.textContent = v.stream; else renderVL();
+});
+api.onChatVideos((r) => {
+  const m = (S.chat.msgs || []).find((x) => x.role === 'assistant' && x.at === r.at);
+  if (!m) return;
+  m.videoBusy = false;
+  m.videos = r.videos || [];
+  m.videoTopic = r.topic || '';
+  m.videoQueries = r.queries || [];
+  if (S.view === 'chat') paintTutor(r.at);
+});
 api.onChatProfile(({ profile }) => {
   if (!profile) return;
   S.chat.profile = profile;
@@ -4303,6 +4700,971 @@ $('#btnUpdate').addEventListener('click', () => {
   setTimeout(() => { const f = document.getElementById('updField'); if (f) f.scrollIntoView({ block: 'center' }); }, 350);
 });
 
+/* ======================================================= 简报页的扩展
+   短标题、工具条（听日报 / 文字风格）、追踪事件、事件图景、便利贴、B站 学习。 */
+
+Object.assign(S, {
+  titles: {},
+  styled: {},
+  styleBusy: '',
+  styleStream: '',
+  styleFailed: {},
+  showOriginal: false,
+  styles: null,
+  events: { list: [], loaded: false, edit: '', open: {}, quiet: 0 },
+  seeds: new Map(),
+  stickies: null,
+  bili: null,
+  biliBusy: false,
+  ed: { open: false, kind: '', id: '', seed: null, key: '', busy: false, stream: '', steps: [], data: null, err: '' },
+  tts: { on: false, paused: false, queue: [], i: 0, audio: null, cache: {}, token: 0, warned: false },
+});
+
+const fmtLocal = (iso) => {
+  const t = new Date(iso);
+  if (!iso || Number.isNaN(t.getTime())) return '—';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${t.getMonth() + 1}月${t.getDate()}日 ${p(t.getHours())}:${p(t.getMinutes())}`;
+};
+
+/* ---------------------------------------------------------- 短标题 */
+
+/** 没有模型时的标题：取「一句话」的第一个分句，太长再截到第一个逗号 */
+function ruleTitleOf(md) {
+  const m = String(md || '').match(/##\s*一句话\s*\n+([\s\S]*?)(?=\n##\s|$)/);
+  let t = (m ? m[1] : '').replace(/\s+/g, ' ').replace(/[*`#>]/g, '').trim();
+  t = t.split(/[；;。！？!?]/)[0] || t;
+  if (t.length > 18) t = t.split(/[，,：:（(]/)[0] || t;
+  return t.slice(0, 18) || `${S.date} 简报`;
+}
+
+async function loadBriefTitle(date) {
+  if (S.titleBusy === date) return;
+  S.titleBusy = date;
+  try {
+    const r = await api.digestTitle(date, false);
+    if (r && r.ok && r.title) {
+      S.titles[date] = r.title;
+      const el = document.getElementById('briefTitle');
+      if (el && S.date === date) el.textContent = r.title;
+    }
+  } catch { /* 标题拿不到就用规则标题 */ }
+  S.titleBusy = '';
+}
+
+/* ---------------------------------------------------------- 工具条：听日报 + 文字风格 */
+
+const styleName = (id) => ((S.styles || []).find((x) => x.id === id) || { name: id }).name;
+
+async function ensureStyles() {
+  try { S.styles = (await api.styleList()).styles || []; } catch { S.styles = [{ id: 'plain', name: '原样' }]; }
+}
+
+function briefTools(date, sid, styled, busy) {
+  const styles = S.styles || [{ id: 'plain', name: '原样' }];
+  const t = S.tts;
+  return `<div class="btools">
+    <button type="button" class="btn quiet btools-play${t.on ? ' on' : ''}" data-act="tts-toggle">${t.on ? (t.paused ? '▶ 继续听' : '❚❚ 暂停') : '▶ 听日报'}</button>
+    <label class="btools-style"><span class="rlabel">文字风格</span>
+      <select id="styleSel">${styles.map((x) => `<option value="${esc(x.id)}"${x.id === sid ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
+    ${sid !== 'plain' && styled ? `<button type="button" class="mini" data-act="style-orig">${S.showOriginal ? '看润色版' : '看原版'}</button><button type="button" class="mini" data-act="style-redo">重新润色</button>` : ''}
+    ${busy ? '<span class="hint">润色中…</span>' : ''}
+    <button type="button" class="mini" data-act="style-new">自定义风格</button>
+  </div>`;
+}
+
+async function runStyle(date, id, force) {
+  const key = `${date}:${id}`;
+  S.styleBusy = key;
+  S.styleStream = '';
+  if (S.view === 'today' && S.date === date) renderView();
+  let r;
+  try { r = await api.styleApply({ date, id, force: !!force }); } catch (e) { r = { ok: false, error: e.message }; }
+  S.styleBusy = '';
+  if (r && r.ok && r.text) { S.styled[key] = r.text; delete S.styleFailed[key]; }
+  else if (!(r && r.plain)) { S.styleFailed[key] = true; toast((r && r.error) || '润色失败', true); }
+  if (S.view === 'today' && S.date === date) renderView();
+}
+
+async function setBriefStyle(id) {
+  await api.saveSettings({ briefStyle: id });
+  await loadState();
+  S.showOriginal = false;
+  delete S.styleFailed[`${S.date}:${id}`];
+  if (S.view === 'today') renderView();
+}
+
+/* ---------------------------------------------------------- 追踪事件 */
+
+async function loadEvents() {
+  try {
+    const r = await api.eventsList();
+    S.events.list = (r && r.events) || [];
+  } catch { S.events.list = []; }
+  S.events.loaded = true;
+  renderRail();
+}
+
+const evNew = (ev) => (ev.items || []).filter((x) => x.via !== 'seed' && String(x.foundAt) > String(ev.seenAt || '')).length;
+
+function seedId(seed) {
+  const k = String(seed.url || seed.title || '').slice(0, 400);
+  S.seeds.set(k, seed);
+  return k;
+}
+
+/** 新闻、简报条目旁的两个按钮 */
+function evBtns(seed) {
+  if (!seed || !seed.title) return '';
+  const sid = seedId(seed);
+  const tracked = (S.events.list || []).some((e) => e.status !== 'closed' && e.seed && ((seed.url && e.seed.url === seed.url) || e.seed.title === seed.title));
+  return `<button type="button" class="mini evb" data-act="pano" data-sid="${esc(sid)}" title="现搜一圈，把这件事的起因、经过、发展和各方讲清楚">图景</button>`
+    + `<button type="button" class="mini evb${tracked ? ' on' : ''}" data-act="ev-track" data-sid="${esc(sid)}" title="打上标签，之后每次采集都接着查，简报里优先写">${tracked ? '追踪中' : '追踪'}</button>`;
+}
+
+function eventsStrip() {
+  const list = (S.events.list || []).filter((e) => e.status === 'tracking');
+  if (!list.length) return '';
+  return `<section class="evstrip">
+    <div class="evstrip-head"><span class="side-eye">// TRACKING</span><b>追踪中的事件</b><span class="hint">${list.length} 件 · 每次采集完自动接着查</span><button type="button" class="mini" data-act="goto-events">管理</button></div>
+    ${list.slice(0, 6).map((ev) => {
+      const n = evNew(ev);
+      const latest = [...(ev.items || [])].filter((x) => x.via !== 'seed').sort((a, b) => String(b.foundAt).localeCompare(String(a.foundAt)))[0];
+      return `<div class="evrow">
+        <button type="button" class="evname" data-act="ev-goto" data-id="${esc(ev.id)}">${esc(ev.title)}</button>
+        <span class="evbadge${n ? ' on' : ''}">${n ? '+' + n + ' 新' : '没新动静'}</span>
+        ${latest ? `<a class="evlatest" href="${esc(latest.url)}" data-ext="1" data-url="${esc(latest.url)}">${esc(latest.title)}</a>` : '<span class="evlatest hint">还在找第一批报道…</span>'}
+      </div>`;
+    }).join('')}
+  </section>`;
+}
+
+function evCard(ev) {
+  const st = { tracking: '追踪中', paused: '已暂停', closed: '已结束' }[ev.status] || ev.status;
+  const items = [...(ev.items || [])].sort((a, b) => String(b.date || b.foundAt).localeCompare(String(a.date || a.foundAt)));
+  const open = !!S.events.open[ev.id];
+  const shown = open ? items : items.slice(0, 8);
+  const id = esc(ev.id);
+  const seed = { title: ev.seed?.title || ev.title, summary: ev.seed?.summary || '', url: ev.seed?.url || '', source: ev.seed?.source || '', date: ev.seed?.date || '' };
+  const tags = S.events.edit === ev.id
+    ? `<div class="evc-edit">
+        <label><span class="rlabel">核心专名</span><input id="evCore" type="text" value="${esc((ev.core || []).join('，'))}" spellcheck="false" /></label>
+        <label><span class="rlabel">关键词</span><input id="evKw" type="text" value="${esc((ev.keywords || []).join('，'))}" spellcheck="false" /></label>
+        <label><span class="rlabel">搜索词</span><input id="evQ" type="text" value="${esc(ev.query || '')}" spellcheck="false" /></label>
+        <div class="hint">用逗号隔开。本机条目要中一个核心专名再加一个关键词；联网搜回来的中一个核心专名就收。</div>
+        <div class="evc-acts"><button type="button" class="btn" data-act="ev-edit-save" data-id="${id}">保存标签</button><button type="button" class="btn quiet" data-act="ev-edit" data-id="">取消</button></div>
+      </div>`
+    : `<div class="evc-tags"><span class="rlabel">核心</span>${(ev.core || []).map((k) => `<span class="tag core">${esc(k)}</span>`).join('')}
+        <span class="rlabel">关键词</span>${(ev.keywords || []).map((k) => `<span class="tag">${esc(k)}</span>`).join('') || '<span class="hint">无</span>'}
+        <button type="button" class="mini" data-act="ev-edit" data-id="${id}">改标签</button></div>`;
+  return `<article class="evcard${ev.status !== 'tracking' ? ' is-off' : ''}" data-id="${id}">
+    <div class="evc-head"><h2>${esc(ev.title)}</h2><span class="evc-st st-${esc(ev.status)}">${esc(st)}</span></div>
+    <div class="evc-meta">起点：${esc(ev.seed?.title || '')} · 建于 ${fmtLocal(ev.createdAt)} · 上次查 ${fmtLocal(ev.lastCheck)} · 事件链 ${items.length} 篇${ev.tagged_by === 'rule' ? ' · 标签是按标题粗配的（没填 API key），建议改一下' : ''}</div>
+    ${tags}
+    <div class="evc-acts">
+      <button type="button" class="btn" data-act="ev-report" data-id="${id}">${ev.report ? '看事件链报告' : '生成事件链报告'}</button>
+      <button type="button" class="btn quiet" data-act="pano" data-sid="${esc(seedId(seed))}">事件图景</button>
+      <button type="button" class="btn quiet" data-act="ev-refresh" data-id="${id}">现在查一次</button>
+      ${ev.status === 'tracking'
+        ? `<button type="button" class="btn quiet" data-act="ev-status" data-st="paused" data-id="${id}">暂停</button>`
+        : `<button type="button" class="btn quiet" data-act="ev-status" data-st="tracking" data-id="${id}">接着追</button>`}
+      ${ev.status !== 'closed' ? `<button type="button" class="btn quiet" data-act="ev-status" data-st="closed" data-id="${id}">结束</button>` : ''}
+      <button type="button" class="btn quiet" data-act="ev-del" data-id="${id}">删除</button>
+    </div>
+    <ol class="evc-items">${shown.map((x) => `<li class="${x.via !== 'seed' && String(x.foundAt) > String(ev.seenAt || '') ? 'is-new' : ''}">
+        <span class="evi-date">${esc(x.date || String(x.foundAt).slice(0, 10))}</span>
+        <a href="${esc(x.url)}" data-ext="1" data-url="${esc(x.url)}">${esc(x.title)}</a>
+        <span class="evi-src">${esc(x.source || '')}${x.via === 'web' ? ' · 联网' : x.via === 'seed' ? ' · 起点' : ''}</span>
+        ${x.via === 'seed' ? '' : `<button type="button" class="mini evi-x" data-act="ev-drop" data-id="${id}" data-url="${esc(x.url)}" title="不相关，去掉">×</button>`}
+      </li>`).join('') || '<li class="hint">还没找到报道。点「现在查一次」，或者把标签改得更准。</li>'}</ol>
+    ${items.length > 8 ? `<button type="button" class="mini" data-act="ev-more" data-id="${id}">${open ? '收起' : `展开全部 ${items.length} 篇`}</button>` : ''}
+  </article>`;
+}
+
+function renderEvents(host) {
+  if (!S.events.loaded) {
+    host.innerHTML = `${stampLine()}<div class="empty"><h1>正在读事件…</h1></div>`;
+    void loadEvents().then(() => { if (S.view === 'events') renderView(); });
+    return;
+  }
+  const list = S.events.list || [];
+  const head = `${stampLine()}
+    <div class="radar-head" style="margin-top:22px"><h1>追踪事件</h1><span class="count">点过「追踪」的事，每次采集完都会自动接着查</span></div>
+    <p class="hint keep" style="max-width:66ch;margin-top:14px">在简报条目、原始雷达的新闻 / HN / 知乎旁边点「追踪」：程序给这件事打上标签（核心专名 + 关键词），
+      之后拿标签去对本机采集到的条目、再联网搜一次，新进展记进下面的事件链；生成简报时这些事件排在最前。标签不准就点「改标签」，
+      搜错的条目点 × 去掉。</p>
+    <div class="actions" style="margin:14px 0 6px">
+      <button type="button" class="btn quiet" data-act="ev-refresh-all">全部现在查一次</button>
+      <button type="button" class="btn quiet" data-act="open-events-dir">打开报告文件夹</button>
+    </div>`;
+  if (!list.length) {
+    host.innerHTML = head + '<p class="empty-soft" style="margin-top:20px">还没有追踪的事件。去「今日简报」或「原始雷达 → 新闻」，在想盯的那条旁边点「追踪」。</p>';
+    return;
+  }
+  host.innerHTML = head + list.map(evCard).join('');
+  // 打开就算看过：这一次的「新」标记留着，下次再进来才清掉
+  const fresh = list.filter((ev) => evNew(ev));
+  if (fresh.length) {
+    S.events.quiet = Date.now();
+    for (const ev of fresh) void api.eventsUpdate({ id: ev.id, seen: true });
+  }
+}
+
+async function trackSeed(seed) {
+  toast(S.state.config.hasKey ? '正在给这件事打标签…' : '没填 API key：按标题粗配标签，之后可以手动改。');
+  const r = await api.eventsCreate(seed);
+  if (!r || !r.ok) { toast((r && r.error) || '追踪失败', true); return; }
+  await loadEvents();
+  toast(r.existed
+    ? `「${r.event.title}」已经在追踪了。`
+    : `开始追踪「${r.event.title}」：核心词 ${(r.event.core || []).join('、')}。后台正在搜第一批报道。`, false, 6000);
+  renderView();
+}
+
+/* ---------------------------------------------------------- 事件图景 / 事件链报告 / 自定义风格：右侧抽屉 */
+
+function edOpen(patch) {
+  S.ed = { open: true, kind: '', id: '', seed: null, key: '', busy: false, stream: '', steps: [], data: null, err: '', ...patch };
+  renderEd();
+}
+function edClose() {
+  S.ed.open = false;
+  const el = document.getElementById('evcard');
+  if (el) {
+    el.classList.remove('is-open');
+    setTimeout(() => { if (!S.ed.open) el.hidden = true; }, 180);
+  }
+}
+
+function renderEd() {
+  const el = document.getElementById('evcard');
+  if (!el || !S.ed.open) return;
+  const box = el.querySelector('.sdoc-box');
+  const v = S.ed;
+  const ev = v.kind === 'report' ? (S.events.list || []).find((x) => x.id === v.id) : null;
+  if (v.kind === 'style') {
+    box.innerHTML = `
+      <div class="sdoc-head"><div><h2 class="sdoc-title">自定义文字风格</h2>
+        <div class="sdoc-src">先把简报按格式写好，再按这里的要求润一遍色</div></div>
+        <button class="sdoc-x" type="button" data-act="ed-close" aria-label="关闭">×</button></div>
+      <div class="style-form">
+        <label><span class="rlabel">名字</span><input id="stName" type="text" maxlength="20" placeholder="比如：猫娘播报、相声版、毒舌主编" spellcheck="false" /></label>
+        <label><span class="rlabel">一句话说明</span><input id="stDesc" type="text" maxlength="60" placeholder="选风格时看到的说明，可不填" spellcheck="false" /></label>
+        <label><span class="rlabel">文风要求</span><textarea id="stPrompt" rows="8" spellcheck="false" placeholder="写给模型看的要求。比如：用相声捧哏的口吻讲，每一节结尾抖一个包袱；但事实、数字、链接一个字都不改。"></textarea></label>
+        <p class="sdoc-note">程序会自动加上硬规则：事实、数字、日期、专有名词和链接不改不增不删，小节不合并不删除。存成 styles/ 里的一个 .md 文件，拷给别人就能用。</p>
+        <div class="sdoc-actions"><button class="btn" type="button" data-act="style-save">保存并使用</button><button class="btn quiet" type="button" data-act="open-styles-dir">打开风格文件夹</button></div>
+      </div>`;
+  } else {
+    const title = v.kind === 'pano' ? `事件图景：${(v.seed && v.seed.title) || ''}` : `${ev ? ev.title : ''} · 事件链报告`;
+    const src = v.kind === 'pano'
+      ? '现搜一圈：多组查询 + 本机历史 + 读几篇原文，每句标出处'
+      : `${ev ? `${(ev.items || []).length} 篇报道 · ` : ''}按时间串起来的来龙去脉`;
+    const steps = v.kind === 'pano' && v.steps.length
+      ? `<ol class="pano-steps">${v.steps.map((s, i) => `<li class="${i === v.steps.length - 1 && v.busy ? 'on' : ''}">${esc(s)}</li>`).join('')}</ol>`
+      : '';
+    let body = '';
+    if (v.busy) body = v.stream ? `<div class="vl-stream" id="edStream">${esc(v.stream)}</div>` : `<p class="sdoc-note">${v.kind === 'pano' ? '正在搜资料，通常 20–60 秒…' : '正在把报道按时间串起来…'}</p>`;
+    else if (v.err) body = `<p class="sdoc-err">${esc(v.err)}</p>`;
+    else if (v.data) body = `<div class="prose vl-body">${window.renderMarkdown(v.data.text || '')}</div>`;
+    const acts = v.data && !v.busy
+      ? `<div class="sdoc-actions">
+          <button class="btn" type="button" data-act="ed-copy">复制</button>
+          ${v.kind === 'pano' ? `<button class="btn" type="button" data-act="ev-track" data-sid="${esc(seedId({ ...v.seed, panoKey: v.key }))}">追踪这件事</button>` : ''}
+          ${v.kind === 'report' ? '<button class="btn" type="button" data-act="ed-save-report">存为 Markdown</button><button class="btn quiet" type="button" data-act="open-events-dir">打开报告文件夹</button>' : ''}
+          <button class="btn quiet" type="button" data-act="ed-redo">重新生成</button>
+        </div>
+        <p class="sdoc-note">生成于 ${fmtLocal(v.data.at)}${v.data.cached ? ' · 之前生成过，直接用的缓存，没花钱' : ''}。AI 根据搜到的资料写的，关键事实点来源核对。</p>`
+      : '';
+    box.innerHTML = `
+      <div class="sdoc-head"><div><h2 class="sdoc-title">${esc(title)}</h2><div class="sdoc-src">${esc(src)}</div></div>
+        <button class="sdoc-x" type="button" data-act="ed-close" aria-label="关闭">×</button></div>
+      ${steps}${body}${acts}`;
+  }
+  el.hidden = false;
+  requestAnimationFrame(() => el.classList.add('is-open'));
+}
+
+async function openPano(seed, force) {
+  if (!seed || !seed.title) return;
+  const key = await api.panoKey(seed);
+  edOpen({ kind: 'pano', seed, key, busy: true });
+  let r;
+  try { r = await api.panoGet(seed, !!force); } catch (e) { r = { ok: false, error: e.message }; }
+  if (!S.ed.open || S.ed.kind !== 'pano' || S.ed.key !== key) return;
+  S.ed.busy = false;
+  if (r && r.ok) S.ed.data = r; else S.ed.err = (r && r.error) || '没写成';
+  renderEd();
+}
+
+async function openReport(id, force) {
+  const ev = (S.events.list || []).find((x) => x.id === id);
+  if (!ev) return;
+  if (ev.report && !force) { edOpen({ kind: 'report', id, data: ev.report }); return; }
+  edOpen({ kind: 'report', id, busy: true });
+  let r;
+  try { r = await api.eventsReport(id); } catch (e) { r = { ok: false, error: e.message }; }
+  if (!S.ed.open || S.ed.kind !== 'report' || S.ed.id !== id) return;
+  S.ed.busy = false;
+  if (r && r.ok) S.ed.data = r; else S.ed.err = (r && r.error) || '没写成';
+  await loadEvents();
+  renderEd();
+}
+
+/* ---------------------------------------------------------- 右侧栏：便利贴 + B站 学习 */
+
+async function loadStickies() {
+  try { S.stickies = (await api.stickyList()).notes || []; } catch { S.stickies = []; }
+}
+
+const stickyTimers = {};
+function stickyTyped(el) {
+  const id = el.dataset.id;
+  const n = (S.stickies || []).find((x) => x.id === id);
+  if (n) n.text = el.value;
+  clearTimeout(stickyTimers[id]);
+  stickyTimers[id] = setTimeout(() => { void api.stickySave({ id, text: el.value }); }, 600);
+}
+
+async function stickyAdd(text, source) {
+  const t = String(text || '').trim();
+  if (!t) return;
+  const r = await api.stickySave({ text: t, source });
+  if (r && r.ok) { S.stickies = r.notes; paintSide(); toast('贴上了'); }
+}
+
+/* ---------------------------------------------------------- 侧栏分节：标题可以点着收起，收起状态记在这台电脑上 */
+
+const SIDE_FOLD_KEY = 'radar.side.fold';
+function sideFold() {
+  try { return JSON.parse(localStorage.getItem(SIDE_FOLD_KEY) || '{}') || {}; } catch { return {}; }
+}
+function toggleSideFold(key) {
+  const f = sideFold();
+  f[key] = !f[key];
+  try { localStorage.setItem(SIDE_FOLD_KEY, JSON.stringify(f)); } catch {}
+}
+function sideSec(key, eye, title, extra, body) {
+  const folded = !!sideFold()[key];
+  return `<section class="side-sec${folded ? ' is-folded' : ''}" data-sec="${key}">
+    <div class="side-head">
+      <button type="button" class="side-fold" data-act="side-fold" data-sec="${key}" aria-expanded="${folded ? 'false' : 'true'}" title="${folded ? '展开' : '收起'}"><span class="side-eye">// ${eye}</span><b>${title}</b><i class="fold-mark">${folded ? '+' : '−'}</i></button>
+      ${extra || ''}
+    </div>
+    ${folded ? '' : body}
+  </section>`;
+}
+
+function stickiesHTML() {
+  const notes = [...(S.stickies || [])].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || String(b.updated || b.at).localeCompare(String(a.updated || a.at)));
+  const rows = (t) => Math.min(12, Math.max(2, String(t || '').split('\n').length + Math.floor(String(t || '').length / 24)));
+  return sideSec('notes', 'NOTES', '便利贴', `<span class="hint">${notes.length ? notes.length + ' 张' : ''}</span>`, `
+    <div class="sticky-new"><textarea id="stickyNew" rows="2" spellcheck="false" placeholder="随手记一句…（Ctrl+Enter 贴上；在正文里选中文字也能直接记）"></textarea><button type="button" class="mini" data-act="sticky-add">贴上</button></div>
+    <div class="stickies">${notes.map((n) => `<div class="sticky c-${esc(n.color || 'paper')}${n.pinned ? ' is-pinned' : ''}">
+        <textarea class="sticky-text" data-id="${esc(n.id)}" rows="${rows(n.text)}" spellcheck="false">${esc(n.text || '')}</textarea>
+        ${n.source && n.source.url ? `<a class="sticky-src" href="${esc(n.source.url)}" data-ext="1" data-url="${esc(n.source.url)}">${esc(n.source.title || hostOf(n.source.url))}</a>` : n.source && n.source.title ? `<span class="sticky-src">${esc(n.source.title)}</span>` : ''}
+        <div class="sticky-foot"><span>${fmtLocal(n.updated || n.at)}</span>
+          <button type="button" class="mini" data-act="sticky-pin" data-id="${esc(n.id)}">${n.pinned ? '取消置顶' : '置顶'}</button>
+          <button type="button" class="mini" data-act="sticky-color" data-id="${esc(n.id)}">换色</button>
+          <button type="button" class="mini" data-act="sticky-del" data-id="${esc(n.id)}">撕掉</button></div>
+      </div>`).join('')}</div>`);
+}
+
+function biliHTML() {
+  const b = S.bili;
+  const extra = `<button type="button" class="mini" data-act="bili-refresh">${S.biliBusy ? '刷新中…' : '刷新'}</button>`;
+  if (!b) return sideSec('bili', 'BILIBILI', '今天学点什么', extra, `<p class="hint keep">${S.biliBusy ? '正在看你的收藏夹和需求…' : ''}</p>`);
+  if (b.error) return sideSec('bili', 'BILIBILI', '今天学点什么', extra, `<p class="hint keep">${esc(b.error)}</p>`);
+  const row = (v, tag) => `<div class="bl-row">
+      ${tag || ''}<a class="bl-title" href="${esc(v.url)}" data-ext="1" data-url="${esc(v.url)}">${esc(v.title)}</a>
+      ${v.pct !== undefined ? `<div class="bl-prog"><i style="width:${Math.max(2, v.pct)}%"></i></div>` : ''}
+      <div class="bl-meta">${v.pct !== undefined
+        ? `${v.progressText ? '看到 ' + esc(v.progressText) + ' / ' : '还没开始 · '}${esc(v.durationText)} · ${esc(v.folder)}`
+        : esc([v.author, v.play ? shortNum(v.play) + ' 播放' : '', v.duration, v.date].filter(Boolean).join(' · '))}</div>
+      <div class="bl-acts">${vlBtns(v.url, v.title)}</div>
+    </div>`;
+  const cont = b.login
+    ? `<div class="side-sub">继续学习 <span class="hint">${b.uname ? esc(b.uname) + ' 的' : ''}收藏夹和稍后再看里还有 ${b.unfinished} 个教程没看完</span></div>`
+      + (b.cont.length ? b.cont.map((v) => row(v)).join('') : '<p class="hint keep">收藏的教程都看完了，或者收藏夹里没有教程类视频。</p>')
+    : `<p class="hint keep">${b.reason === 'expired'
+      ? 'B站 登录 Cookie 失效了，到「设置」重新填一下，就能接着提醒收藏夹里没看完的教程。'
+      : '在「设置」里填 B站 登录 Cookie，这里就会列出收藏夹和稍后再看里没看完的教程，带上次看到哪。'}
+      <button type="button" class="mini" data-act="goto-settings">去设置</button></p>`;
+  const topics = b.topics || [];
+  const picks = b.picks || [];
+  const pk = `<div class="side-sub">按你的需求推荐 <span class="hint">${topics.length ? '「' + topics.map(esc).join('」「') + '」' : ''}</span></div>`
+    + (!topics.length
+      ? '<p class="hint keep">在「需求雷达」或对话里说说你想学什么，这里每天按它推荐教程和资讯视频。<button type="button" class="mini" data-act="goto-needs">去记需求</button></p>'
+      : picks.length ? picks.map((v) => row(v, `<span class="bl-kind">${esc(v.kind)}</span>`)).join('') : '<p class="hint keep">今天没搜到够格的新视频。</p>');
+  return sideSec('bili', 'BILIBILI', '今天学点什么', extra, `${cont}${pk}<p class="hint keep side-foot">${fmtLocal(b.at)} 更新 · 每天第一次打开时刷新</p>`);
+}
+
+/** 简报页窄窗口时排在简报下面的那一栏（宽屏时这些都在常驻侧栏里） */
+function sideHTML() { return stickiesHTML() + biliHTML(); }
+
+function paintSide() {
+  if (dockOn()) { renderDock(); return; }
+  const el = document.getElementById('todaySide');
+  if (!el) return;
+  // 正在打字的便利贴别被重画冲掉
+  const a = document.activeElement;
+  if (a && el.contains(a) && a.tagName === 'TEXTAREA' && a.id !== 'stickyNew') return;
+  const keep = a && a.id === 'stickyNew' ? a.value : null;
+  el.innerHTML = sideHTML();
+  if (keep !== null) { const n = document.getElementById('stickyNew'); if (n) { n.value = keep; n.focus(); } }
+}
+
+async function loadBili(force) {
+  if (S.biliBusy) return;
+  S.biliBusy = true;
+  paintSide();
+  try {
+    const r = await api.biliLearn(!!force);
+    S.bili = r && r.ok ? r : { error: (r && r.error) || '没取到' };
+  } catch (e) { S.bili = { error: e.message }; }
+  S.biliBusy = false;
+  paintSide();
+}
+
+async function loadSide() {
+  if (!S.stickies) { await loadStickies(); paintSide(); }
+  if (!S.bili && !S.biliBusy) void loadBili(false);
+}
+
+/** 没有简报的那两种页面也挂上右侧栏 */
+function mountTodaySide(host) {
+  if (dockOn()) { void loadSide(); return; }
+  const keep = [...host.children].filter((c) => !c.classList.contains('stamp') && !c.classList.contains('date-nav'));
+  const grid = document.createElement('div');
+  grid.className = 'today-grid';
+  const main = document.createElement('div');
+  main.className = 'today-main';
+  keep.forEach((c) => main.appendChild(c));
+  const side = document.createElement('aside');
+  side.className = 'today-side';
+  side.id = 'todaySide';
+  side.innerHTML = sideHTML();
+  grid.appendChild(main);
+  grid.appendChild(side);
+  host.appendChild(grid);
+  void loadSide();
+}
+
+/* ---------------------------------------------------------- 简报正文：条目标题单独成行 + 图景/追踪按钮 */
+
+function leadStrong(p) {
+  if (!p || p.tagName !== 'P') return null;
+  let f = p.firstChild;
+  while (f && f.nodeType === 3 && !f.textContent.trim()) f = f.nextSibling;
+  if (!f || f.nodeName !== 'STRONG') return null;
+  const t = f.textContent.trim();
+  const after = f.nextSibling ? String(f.nextSibling.textContent || '') : '';
+  if (t.length < 8 || /^[：:]/.test(after) || /[：:]$/.test(t)) return null;
+  return f;
+}
+
+function decorateDigest(root, date) {
+  if (!root) return;
+  const kids = [...root.children];
+  for (let i = 0; i < kids.length; i++) {
+    const p = kids[i];
+    const strong = leadStrong(p);
+    if (!strong) continue;
+    let summary = [...p.childNodes].filter((n) => n !== strong).map((n) => n.textContent).join('');
+    let url = (p.querySelector('a[href^="http"]') || {}).href || '';
+    for (let j = i + 1; j < kids.length; j++) {
+      const el = kids[j];
+      if (/^H[1-3]$/.test(el.tagName) || leadStrong(el)) break;
+      summary += ' ' + el.textContent;
+      if (!url) { const a = el.querySelector && el.querySelector('a[href^="http"]'); if (a) url = a.href; }
+    }
+    const title = strong.textContent.trim().replace(/^\d+[.、)）]\s*/, '');
+    const div = document.createElement('div');
+    div.className = 'item-title';
+    const span = document.createElement('span');
+    span.className = 'it-text';
+    span.innerHTML = strong.innerHTML;
+    div.appendChild(span);
+    const acts = document.createElement('span');
+    acts.className = 'it-acts';
+    acts.innerHTML = evBtns({ title, summary: summary.replace(/\s+/g, ' ').trim().slice(0, 600), url, source: '简报', date });
+    div.appendChild(acts);
+    p.parentNode.insertBefore(div, p);
+    strong.remove();
+    while (p.firstChild && ((p.firstChild.nodeType === 3 && !p.firstChild.textContent.trim()) || p.firstChild.nodeName === 'BR')) p.firstChild.remove();
+    if (!p.textContent.trim() && !p.querySelector('a,img')) p.remove();
+  }
+}
+
+/* ---------------------------------------------------------- 选中文字 → 记到便利贴 */
+
+function selPopHide() { const el = document.getElementById('selpop'); if (el) el.hidden = true; }
+document.addEventListener('mouseup', (e) => {
+  if (e.target.closest && e.target.closest('#selpop')) return;
+  setTimeout(() => {
+    const sel = window.getSelection();
+    const text = sel ? String(sel).trim() : '';
+    const pop = document.getElementById('selpop');
+    if (!pop) return;
+    const node = sel && sel.anchorNode ? (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement) : null;
+    if (text.length < 4 || !node || !node.closest('#view .prose, #vlearn .prose, #evcard .prose')) { pop.hidden = true; return; }
+    const r = sel.getRangeAt(0).getBoundingClientRect();
+    pop.style.left = `${Math.max(8, Math.min(window.innerWidth - 150, r.left + r.width / 2 - 60))}px`;
+    pop.style.top = `${Math.max(8, r.top - 40)}px`;
+    pop.dataset.text = text.slice(0, 2000);
+    pop.hidden = false;
+  }, 0);
+});
+document.addEventListener('scroll', selPopHide, true);
+
+/* ---------------------------------------------------------- 听日报 */
+
+function ttsBlocks() {
+  const out = [];
+  const push = (el, text) => {
+    const t = String(text || '').replace(/https?:\/\/\S+/g, '').replace(/[`*_#>|]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (t.length >= 2) out.push({ el, text: t });
+  };
+  const title = document.getElementById('briefTitle');
+  if (title) push(title, title.textContent);
+  const sf = document.querySelector('.today-main .standfirst');
+  if (sf) push(sf, sf.textContent);
+  const body = document.getElementById('digestBody');
+  if (!body) return out;
+  body.querySelectorAll('h2, h3, .item-title .it-text, p, li, blockquote').forEach((el) => {
+    if (el.closest('pre, table')) return;
+    if (el.tagName === 'P' && el.closest('li, blockquote')) return;
+    push(el.classList.contains('it-text') ? el.closest('.item-title') : el, el.textContent);
+  });
+  return out;
+}
+
+const ttsEngine = () => (S.state.config.ttsEngine === 'api' ? 'api' : 'system');
+function pickVoice(name) {
+  const vs = (window.speechSynthesis && speechSynthesis.getVoices()) || [];
+  return (name && vs.find((v) => v.name === name)) || vs.find((v) => /^zh/i.test(v.lang)) || null;
+}
+
+function paintTtsBar() {
+  paintDockTts();
+  const bar = document.getElementById('ttsbar');
+  if (!bar) return;
+  const t = S.tts;
+  bar.hidden = !t.on || dockOn();
+  if (!t.on) return;
+  const b = t.queue[t.i];
+  bar.querySelector('.tts-play').textContent = t.paused ? '继续' : '暂停';
+  bar.querySelector('.tts-now').textContent = `${Math.min(t.i + 1, t.queue.length)} / ${t.queue.length} · ${b ? b.text.slice(0, 40) : ''}`;
+  const sel = document.getElementById('ttsRateSel');
+  if (sel) sel.value = String(Number(S.state.config.ttsRate) || 1);
+  const play = document.querySelector('.btools-play');
+  if (play) play.textContent = t.paused ? '▶ 继续听' : '❚❚ 暂停';
+}
+
+function ttsMark() {
+  document.querySelectorAll('.is-speaking').forEach((e) => e.classList.remove('is-speaking'));
+  const b = S.tts.queue[S.tts.i];
+  if (b && b.el && b.el.isConnected) {
+    b.el.classList.add('is-speaking');
+    b.el.scrollIntoView({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
+  }
+  paintTtsBar();
+}
+
+async function ttsApiAudio(i) {
+  const b = S.tts.queue[i];
+  if (!b) return '';
+  if (!S.tts.cache[i]) {
+    S.tts.cache[i] = api.ttsSpeak(b.text).then((r) => {
+      if (!r || !r.ok) return { error: (r && r.error) || '语音接口出错' };
+      return { src: `data:${r.mime};base64,${r.b64}` };
+    }).catch((e) => ({ error: e.message }));
+  }
+  return S.tts.cache[i];
+}
+
+function ttsPlay() {
+  const t = S.tts;
+  const b = t.queue[t.i];
+  if (!b) { ttsStop(); return; }
+  ttsMark();
+  const token = ++t.token;
+  const next = () => { if (S.tts.token !== token || !S.tts.on) return; S.tts.i += 1; ttsPlay(); };
+  const c = S.state.config;
+  if (ttsEngine() === 'system') {
+    if (!window.speechSynthesis) { toast('这台电脑的系统语音不可用。', true); ttsStop(); return; }
+    const u = new SpeechSynthesisUtterance(b.text);
+    const v = pickVoice(c.ttsVoice);
+    if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'zh-CN';
+    u.rate = Number(c.ttsRate) || 1;
+    u.pitch = Number(c.ttsPitch) || 1;
+    u.volume = Number(c.ttsVolume ?? 1);
+    u.onend = next;
+    u.onerror = (e) => { if (e.error !== 'interrupted' && e.error !== 'canceled') toast('系统语音出错：' + e.error, true); next(); };
+    speechSynthesis.cancel();
+    speechSynthesis.speak(u);
+  } else {
+    void ttsApiAudio(t.i).then((r) => {
+      if (S.tts.token !== token || !S.tts.on) return;
+      if (!r || r.error) { toast((r && r.error) || '语音接口出错', true); ttsStop(); return; }
+      const a = new Audio(r.src);
+      a.volume = Math.min(1, Math.max(0, Number(c.ttsVolume ?? 1)));
+      S.tts.audio = a;
+      a.onended = next;
+      a.onerror = next;
+      a.play().catch(next);
+      void ttsApiAudio(S.tts.i + 1); // 预取下一段，段与段之间不卡
+    });
+  }
+}
+
+function ttsStart(queue) {
+  const q = queue || ttsBlocks();
+  if (!q.length) { toast('这页没有能读的内容。'); return; }
+  ttsStop(true);
+  Object.assign(S.tts, { on: true, paused: false, queue: q, i: 0, cache: {}, warned: false });
+  paintTtsBar();
+  ttsPlay();
+}
+function ttsPause() {
+  S.tts.paused = true;
+  if (ttsEngine() === 'system') speechSynthesis.pause(); else if (S.tts.audio) S.tts.audio.pause();
+  paintTtsBar();
+}
+function ttsResume() {
+  S.tts.paused = false;
+  if (ttsEngine() === 'system') speechSynthesis.resume(); else if (S.tts.audio) S.tts.audio.play().catch(() => {});
+  paintTtsBar();
+}
+function ttsStop(silent) {
+  S.tts.token += 1;
+  try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch {}
+  if (S.tts.audio) { try { S.tts.audio.pause(); } catch {} S.tts.audio = null; }
+  S.tts.on = false;
+  S.tts.paused = false;
+  document.querySelectorAll('.is-speaking').forEach((e) => e.classList.remove('is-speaking'));
+  paintTtsBar();
+  if (!silent) { const play = document.querySelector('.btools-play'); if (play) { play.textContent = '▶ 听日报'; play.classList.remove('on'); } }
+}
+function ttsJump(d) {
+  if (!S.tts.on) return;
+  S.tts.i = Math.max(0, Math.min(S.tts.queue.length - 1, S.tts.i + d));
+  S.tts.paused = false;
+  ttsPlay();
+}
+
+function fillVoices() {
+  const sel = document.getElementById('s-ttsvoice');
+  if (!sel || !window.speechSynthesis) return;
+  const vs = speechSynthesis.getVoices();
+  const cur = S.state.config.ttsVoice || '';
+  sel.innerHTML = '<option value="">自动（挑中文语音）</option>' + vs
+    .slice()
+    .sort((a, b) => (/^zh/i.test(b.lang) ? 1 : 0) - (/^zh/i.test(a.lang) ? 1 : 0))
+    .map((v) => `<option value="${esc(v.name)}"${v.name === cur ? ' selected' : ''}>${esc(v.name)}（${esc(v.lang)}）</option>`).join('');
+}
+if (window.speechSynthesis) speechSynthesis.addEventListener('voiceschanged', fillVoices);
+
+/* ---------------------------------------------------------- 点击 */
+
+async function briefAction(a, act) {
+  const d = act.dataset;
+  switch (a) {
+    case 'tstrip': await api.saveSettings({ tplStrip: d.v }); await loadState(); renderView(); if (d.v === 'off') toast('模板入口关掉了。想再打开：设置 → 简报页。'); return true;
+    case 'goto-events': case 'ev-goto':
+      setView('events');
+      if (d.id) setTimeout(() => { const el = document.querySelector(`.evcard[data-id="${CSS.escape(d.id)}"]`); if (el) el.scrollIntoView({ block: 'start' }); }, 350);
+      return true;
+    case 'goto-needs': setView('needs'); return true;
+    case 'pano': { const seed = S.seeds.get(d.sid); if (seed) await openPano(seed, false); return true; }
+    case 'ev-track': { const seed = S.seeds.get(d.sid); if (seed) await trackSeed(seed); return true; }
+    case 'ev-report': await openReport(d.id, false); return true;
+    case 'ev-refresh': {
+      act.disabled = true; act.textContent = '查找中…';
+      const r = await api.eventsRefresh(d.id);
+      toast(r && r.ok ? (r.added ? `找到 ${r.added} 篇新报道。` : '这次没找到新报道。') : (r && r.error) || '没查成', !(r && r.ok));
+      await loadEvents(); renderView();
+      return true;
+    }
+    case 'ev-refresh-all': {
+      act.disabled = true; act.textContent = '查找中…';
+      const r = await api.eventsRefresh('');
+      toast(r && r.ok ? `查完了，共找到 ${r.added || 0} 篇新报道。` : (r && r.error) || '没查成', !(r && r.ok));
+      await loadEvents(); renderView();
+      return true;
+    }
+    case 'ev-status': await api.eventsUpdate({ id: d.id, status: d.st }); await loadEvents(); renderView(); return true;
+    case 'ev-del': {
+      const ev = (S.events.list || []).find((x) => x.id === d.id);
+      if (ev && confirm(`删除「${ev.title}」这条事件链？已收集的报道和报告都会一起删掉。`)) { await api.eventsRemove(d.id); await loadEvents(); renderView(); }
+      return true;
+    }
+    case 'ev-edit': S.events.edit = d.id || ''; renderView(); return true;
+    case 'ev-edit-save': {
+      const r = await api.eventsUpdate({ id: d.id, core: $('#evCore').value, keywords: $('#evKw').value, query: $('#evQ').value });
+      if (!r || !r.ok) { toast((r && r.error) || '没存成', true); return true; }
+      S.events.edit = '';
+      await loadEvents(); renderView();
+      toast('标签改好了。点「现在查一次」按新标签重新找。');
+      return true;
+    }
+    case 'ev-drop': await api.eventsUpdate({ id: d.id, dropUrl: d.url }); await loadEvents(); renderView(); return true;
+    case 'ev-more': S.events.open[d.id] = !S.events.open[d.id]; renderView(); return true;
+    case 'open-events-dir': await api.openFolder('events'); return true;
+    case 'open-styles-dir': await api.openFolder('styles'); return true;
+    case 'ed-close': edClose(); return true;
+    case 'ed-copy': if (S.ed.data) { await api.copy(S.ed.data.text || ''); toast('已复制（Markdown）'); } return true;
+    case 'ed-redo': if (S.ed.kind === 'pano') await openPano(S.ed.seed, true); else if (S.ed.kind === 'report') await openReport(S.ed.id, true); return true;
+    case 'ed-save-report': { const r = await api.eventsSaveReport(S.ed.id); toast(r && r.ok ? `已存到 digests/events/${r.name}` : (r && r.error) || '没存成', !(r && r.ok)); return true; }
+    case 'style-orig': S.showOriginal = !S.showOriginal; renderView(); return true;
+    case 'style-redo': await runStyle(S.date, S.state.config.briefStyle, true); return true;
+    case 'style-new': edOpen({ kind: 'style' }); return true;
+    case 'style-save': {
+      const r = await api.styleSave({ name: $('#stName').value, desc: $('#stDesc').value, prompt: $('#stPrompt').value });
+      if (!r || !r.ok) { toast((r && r.error) || '没存成', true); return true; }
+      await ensureStyles();
+      edClose();
+      await setBriefStyle(r.id);
+      return true;
+    }
+    case 'tts-toggle':
+      if (!S.tts.on) ttsStart(); else if (S.tts.paused) ttsResume(); else ttsPause();
+      return true;
+    case 'tts-prev': ttsJump(-1); return true;
+    case 'tts-next': ttsJump(1); return true;
+    case 'tts-stop': ttsStop(); return true;
+    case 'tts-test': ttsStart([{ el: null, text: '这是一段试听：今天的 AI 情报已经准备好了，我们从最重要的一件事讲起。' }]); return true;
+    case 'tts-engine': await api.saveSettings({ ttsEngine: d.v }); await loadState(); renderView(); return true;
+    case 'clear-ttskey': await api.saveSettings({ clearTtsKey: true }); toast('已清除语音接口 key'); await refresh(); return true;
+    case 'sticky-add': { const el = $('#stickyNew'); if (el) await stickyAdd(el.value, null); return true; }
+    case 'sticky-pin': { const n = (S.stickies || []).find((x) => x.id === d.id); if (n) { const r = await api.stickySave({ id: d.id, pinned: !n.pinned }); if (r && r.ok) { S.stickies = r.notes; paintSide(); } } return true; }
+    case 'sticky-color': {
+      const n = (S.stickies || []).find((x) => x.id === d.id);
+      if (n) {
+        const order = ['paper', 'signal', 'ink'];
+        const r = await api.stickySave({ id: d.id, color: order[(order.indexOf(n.color || 'paper') + 1) % order.length] });
+        if (r && r.ok) { S.stickies = r.notes; paintSide(); }
+      }
+      return true;
+    }
+    case 'sticky-del': if (confirm('撕掉这张便利贴？')) { const r = await api.stickyDel(d.id); if (r && r.ok) { S.stickies = r.notes; paintSide(); } } return true;
+    case 'sel-sticky': {
+      const pop = $('#selpop');
+      await stickyAdd(pop.dataset.text || '', { url: '', title: S.view === 'today' ? `${S.date} 简报` : (VIEW_EN[S.view] || '') });
+      pop.hidden = true;
+      window.getSelection().removeAllRanges();
+      return true;
+    }
+    case 'bili-refresh': await loadBili(true); return true;
+    case 'side-fold': toggleSideFold(d.sec); paintSide(); return true;
+    case 'tts-dock-start': await ttsDockStart(); return true;
+    case 'zoom': setZoomPref(d.zoom); return true;
+    default: return false;
+  }
+}
+
+document.addEventListener('change', (e) => {
+  const t = e.target;
+  if (!t) return;
+  if (t.id === 'styleSel') void setBriefStyle(t.value);
+  if (t.id === 'ttsRateSel' || t.id === 'dockRateSel') {
+    void api.saveSettings({ ttsRate: Number(t.value) || 1 }).then(loadState).then(() => { if (S.tts.on) ttsPlay(); });
+  }
+});
+document.addEventListener('input', (e) => {
+  const t = e.target;
+  if (t && t.classList && t.classList.contains('sticky-text')) stickyTyped(t);
+  if (t && t.id === 's-ttsrate') { const v = document.getElementById('ttsRateVal'); if (v) v.textContent = `${t.value}×`; }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.target && e.target.id === 'stickyNew' && e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    void stickyAdd(e.target.value, null);
+  }
+});
+
+api.onEventsUpdated(async () => {
+  await loadEvents();
+  renderDock();
+  if (S.view === 'events' && Date.now() - S.events.quiet < 2500) return;
+  if (S.view === 'events') renderView();
+  else if (S.view === 'today') {
+    const strip = document.querySelector('.evstrip');
+    const html = eventsStrip();
+    if (strip) { if (html) strip.outerHTML = html; else strip.remove(); }
+    else if (html) { const anchor = document.querySelector('.today-main .btools'); if (anchor) anchor.insertAdjacentHTML('afterend', html); }
+  }
+});
+api.onEventsDelta(({ key, text }) => {
+  if (!S.ed.open || !S.ed.busy || key !== `rep:${S.ed.id}`) return;
+  S.ed.stream += text;
+  const box = document.getElementById('edStream');
+  if (box) box.textContent = S.ed.stream; else renderEd();
+});
+api.onPanoProgress(({ key, detail }) => {
+  if (!S.ed.open || S.ed.key !== key) return;
+  S.ed.steps.push(detail);
+  renderEd();
+});
+api.onPanoDelta(({ key, text }) => {
+  if (!S.ed.open || !S.ed.busy || key !== S.ed.key) return;
+  S.ed.stream += text;
+  const box = document.getElementById('edStream');
+  if (box) box.textContent = S.ed.stream; else renderEd();
+});
+api.onStyleDelta(({ key, text }) => {
+  if (key !== S.styleBusy) return;
+  S.styleStream += text;
+  const box = document.getElementById('styleStream');
+  if (box) box.textContent = S.styleStream;
+});
+
+/* ======================================================= 常驻右侧栏：窗口宽于 1440（按缩放后的宽度算）时，每一页右边都有
+   听日报、追踪中的事件、便利贴、B站。窄窗口时收起，简报页把便利贴和 B站 排在简报下面。 */
+
+const DOCK_MQ = window.matchMedia('(min-width: 1440px)');
+const dockOn = () => DOCK_MQ.matches;
+
+/** 「听日报」从哪天读：在简报页就读正在看的那天，否则读最近一份简报 */
+function ttsDate() {
+  if (S.view === 'today' && S.digest && document.getElementById('digestBody')) return S.date;
+  const st = S.state || {};
+  if (st.hasDigest) return st.today;
+  const d = (st.dates || []).find((x) => x.digest);
+  return d ? d.date : '';
+}
+
+/** 不在简报页时，直接从 Markdown 拆出要读的段落（标题、段落、列表项；不念链接、代码和表格） */
+function ttsBlocksFromMd(md, date) {
+  const out = [];
+  const push = (t) => {
+    const s = String(t || '')
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/https?:\/\/\S+/g, '')
+      .replace(/[`*_#>|]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (s.length >= 2) out.push({ el: null, text: s });
+  };
+  push(S.titles[date] || ruleTitleOf(md));
+  let inCode = false;
+  for (const line of String(md || '').split(/\r?\n/)) {
+    if (/^\s*```/.test(line)) { inCode = !inCode; continue; }
+    if (inCode || /^\s*\|/.test(line) || /^\s*-{3,}\s*$/.test(line) || /^#\s/.test(line)) continue;
+    push(line.replace(/^\s*(#{2,6}|[-*+]|\d+[.、)])\s+/, ''));
+  }
+  return out;
+}
+
+async function ttsDockStart() {
+  if (S.view === 'today' && document.getElementById('digestBody')) { ttsStart(); return; }
+  const d = ttsDate();
+  if (!d) { toast('还没有生成过简报。'); return; }
+  const md = await api.digest(d);
+  if (!md) { toast('读不到这天的简报。', true); return; }
+  ttsStart(ttsBlocksFromMd(md, d));
+}
+
+function ttsDockBody() {
+  const t = S.tts;
+  if (t.on) {
+    const b = t.queue[t.i];
+    const rate = Number(S.state.config.ttsRate) || 1;
+    return `<div class="dk-tts-now"><span class="fig">${Math.min(t.i + 1, t.queue.length)} / ${t.queue.length}</span>${esc(b ? b.text.slice(0, 80) : '')}</div>
+      <div class="dk-tts-prog"><i style="width:${Math.round(((t.i + 1) / Math.max(1, t.queue.length)) * 100)}%"></i></div>
+      <div class="dk-tts-ctl">
+        <button type="button" class="mini" data-act="tts-prev">上一段</button>
+        <button type="button" class="mini tts-play" data-act="tts-toggle">${t.paused ? '继续' : '暂停'}</button>
+        <button type="button" class="mini" data-act="tts-next">下一段</button>
+        <button type="button" class="mini" data-act="tts-stop">停止</button>
+        <select id="dockRateSel" aria-label="语速">${[0.8, 1, 1.2, 1.5, 1.8].map((v) => `<option value="${v}"${rate === v ? ' selected' : ''}>${v}×</option>`).join('')}</select>
+      </div>`;
+  }
+  const d = ttsDate();
+  return d
+    ? `<button type="button" class="btn quiet wide" data-act="tts-dock-start">▶ 听${d === (S.state && S.state.today) ? '今天' : ' ' + esc(d.slice(5)) + ' '}的简报</button>
+       <p class="hint keep">${ttsEngine() === 'api' ? '用自定义语音接口' : '用系统语音'}读；在简报页听，读到哪段那段就会亮起来。</p>`
+    : '<p class="hint keep">还没有生成过简报。</p>';
+}
+
+function paintDockTts() {
+  const box = document.getElementById('dockTts');
+  if (box) box.innerHTML = ttsDockBody();
+}
+
+function eventsDockHTML() {
+  const list = (S.events.list || []).filter((e) => e.status === 'tracking');
+  const body = list.length
+    ? list.slice(0, 8).map((ev) => {
+      const n = evNew(ev);
+      const latest = [...(ev.items || [])].filter((x) => x.via !== 'seed').sort((a, b) => String(b.foundAt).localeCompare(String(a.foundAt)))[0];
+      return `<div class="dk-ev">
+          <button type="button" class="evname" data-act="ev-goto" data-id="${esc(ev.id)}">${esc(ev.title)}</button>
+          <span class="evbadge${n ? ' on' : ''}">${n ? '+' + n + ' 新' : '没新动静'}</span>
+          ${latest ? `<a class="dk-ev-latest" href="${esc(latest.url)}" data-ext="1" data-url="${esc(latest.url)}">${esc(latest.title)}</a>` : '<span class="dk-ev-latest hint">还在找第一批报道…</span>'}
+        </div>`;
+    }).join('')
+    : '<p class="hint keep">还没有追踪的事件。在简报条目或新闻旁边点「追踪」。</p>';
+  return sideSec('events', 'TRACKING', '追踪中的事件', '<button type="button" class="mini" data-act="goto-events">管理</button>', body);
+}
+
+function renderDock() {
+  const el = document.getElementById('dock');
+  if (!el) return;
+  const on = dockOn();
+  document.body.classList.toggle('has-dock', on);
+  el.hidden = !on;
+  if (!on || !S.state) return;
+  const body = document.getElementById('dockBody');
+  // 正在便利贴里打字时不整栏重画，不然字会被冲掉
+  const a = document.activeElement;
+  if (a && body.contains(a) && a.tagName === 'TEXTAREA' && a.id !== 'stickyNew') { paintDockTts(); return; }
+  const keep = a && a.id === 'stickyNew' ? a.value : null;
+  const top = body.scrollTop;
+  body.innerHTML = sideSec('tts', 'LISTEN', '听日报', '', `<div id="dockTts">${ttsDockBody()}</div>`)
+    + eventsDockHTML() + stickiesHTML() + biliHTML();
+  body.scrollTop = top;
+  if (keep !== null) { const n = document.getElementById('stickyNew'); if (n) { n.value = keep; n.focus(); } }
+}
+
+DOCK_MQ.addEventListener('change', () => {
+  renderDock();
+  paintTtsBar();
+  if (S.view === 'today') renderView();
+  if (dockOn()) void loadSide();
+});
+
+/* ---------------------------------------------------------- 界面缩放 */
+
+const zoomPref = () => (window.radarZoom ? window.radarZoom.pref() : 'auto');
+const zoomNow = () => (window.radarZoom ? window.radarZoom.current() : 1);
+
+function setZoomPref(p) {
+  if (!window.radarZoom) return;
+  window.radarZoom.set(p);
+  setTimeout(() => {
+    if (S.view === 'settings') renderView();
+    renderDock();
+  }, 220);
+}
+
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  const k = e.key;
+  if (k !== '=' && k !== '+' && k !== '-' && k !== '_' && k !== '0') return;
+  e.preventDefault();
+  if (k === '0') { setZoomPref('auto'); toast('界面缩放回到「自动」'); return; }
+  const cur = zoomNow();
+  const next = Math.min(2, Math.max(0.8, Math.round((cur + (k === '-' || k === '_' ? -0.1 : 0.1)) * 20) / 20));
+  setZoomPref(String(next));
+  toast(`界面缩放 ${Math.round(next * 100)}%（Ctrl+0 回到自动）`);
+});
+
+async function initBriefExtras() {
+  await Promise.all([loadEvents(), ensureStyles(), loadStickies()]);
+  renderDock();
+  if (dockOn()) void loadSide();
+}
+
 (async function boot() {
   try {
     await loadState();
@@ -4313,6 +5675,7 @@ $('#btnUpdate').addEventListener('click', () => {
     try { S.usage = await api.usage(); } catch {}
     await ensureTplLib();
     await ensureTerms();
+    await initBriefExtras();
   } catch (e) {
     toast('读取数据失败：' + e.message, true);
   }

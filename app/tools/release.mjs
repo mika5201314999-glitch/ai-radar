@@ -38,7 +38,7 @@ const die = (msg) => { console.error('✗ ' + msg); process.exit(1); };
 
 /* ---------- 发哪些文件 ---------- */
 // 程序代码：每次都覆盖
-const APP_FILES = ['main.js', 'preload.js', 'updater.js', 'package.json', 'icon.ico', 'icon-32.png', 'icon-256.png'];
+const APP_FILES = ['main.js', 'preload.js', 'updater.js', 'events.js', 'package.json', 'icon.ico', 'icon-32.png', 'icon-256.png'];
 const ROOT_CODE = ['collect.mjs', 'backfill.mjs', 'exthub.mjs', 'skilldoc.mjs', 'skills.mjs', 'websearch.mjs', 'run_daily.cmd', 'README.md'];
 // 数据文件：用户可能改过，改过的不覆盖
 const ROOT_DATA = ['agents.json', 'concepts.json', 'domains.json', 'tasks.json', 'templates.json', 'watchlist.md'];

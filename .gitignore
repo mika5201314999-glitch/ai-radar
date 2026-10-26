@@ -34,3 +34,8 @@ local/
 
 # ---- 发布产物（更新包、完整包），传到 GitHub Releases，不进仓库 ----
 release/out/
+
+# 视频学习存下来的笔记（AI 笔记 / 概括）
+notes/
+# 自己写的简报文字风格（styles/*.md，和 SKILL.md 一个写法）
+styles/

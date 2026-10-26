@@ -13,6 +13,8 @@
  *   state/seen.json        去重：项目首次出现日期
  */
 import crypto from 'node:crypto';
+import http from 'node:http';
+import https from 'node:https';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -76,6 +78,49 @@ async function fetchText(url, { timeout = 25000, headers = {}, tries = 2 } = {})
 async function fetchJson(url, opts) {
   return JSON.parse(await fetchText(url, opts));
 }
+// 系统代理：应用从 Windows 设置读出来用 RADAR_PROXY 传进来，命令行跑时认 HTTPS_PROXY。
+// 只有直连常被墙的源（Civitai、Hugging Face）走它，其他源照旧直连。
+const PROXY = process.env.RADAR_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || '';
+
+/** 经 HTTP 代理的 CONNECT 隧道取一个 https 地址（零依赖；跟随重定向） */
+function proxyText(url, { timeout = 30000, headers = {}, hops = 3 } = {}) {
+  const u = new URL(url);
+  const p = new URL(PROXY);
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: p.hostname, port: p.port || 80, method: 'CONNECT', path: `${u.hostname}:443`, timeout });
+    req.on('connect', (res, socket) => {
+      if (res.statusCode !== 200) { socket.destroy(); reject(new Error(`代理 CONNECT ${res.statusCode}`)); return; }
+      const get = https.get({
+        host: u.hostname, path: u.pathname + u.search, socket, servername: u.hostname, agent: false, timeout,
+        headers: { 'user-agent': UA, ...headers },
+      }, (r) => {
+        if (r.statusCode >= 300 && r.statusCode < 400 && r.headers.location && hops > 0) {
+          r.resume();
+          resolve(proxyText(new URL(r.headers.location, url).href, { timeout, headers, hops: hops - 1 }));
+          return;
+        }
+        if (r.statusCode !== 200) { r.resume(); reject(new Error(`HTTP ${r.statusCode}`)); return; }
+        const chunks = [];
+        r.on('data', (c) => chunks.push(c));
+        r.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+        r.on('error', reject);
+      });
+      get.on('error', reject);
+      get.on('timeout', () => get.destroy(new Error('timeout')));
+    });
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('代理超时')));
+    req.end();
+  });
+}
+/** 有代理先走代理、失败再直连；没代理就直连 */
+async function fetchJsonWall(url, opts = {}) {
+  if (PROXY) {
+    try { return JSON.parse(await proxyText(url, opts)); } catch { /* 再直连试一次 */ }
+  }
+  return fetchJson(url, opts);
+}
+
 async function trySource(name, fn) {
   try {
     const v = await fn();
@@ -868,7 +913,160 @@ async function collectZhihu() {
 
 /* ---------------------------------------- 追踪名单（需求雷达「持续帮我关注」） */
 
-const TRACK_WORDS = /(windows|win32|win64|\.exe|installer|winget|portable|plugin|插件|batch|批量|gui|\bexe\b|api|sdk|支持|新增)/i;
+/* ---- AI 生图与工作流：新模型、能出图的 API、工作流、社区模型、开源项目与 ComfyUI 节点、中文教程 ---- */
+
+const IMG_HF_TASKS = [['text-to-image', '文生图'], ['image-to-image', '图生图 / 编辑']];
+// 这一栏会随分享版发出去：Civitai 只留 PG / PG-13（nsfwLevel ≤ 3）、不是真人肖像的条目，HF 去掉标了成人内容的
+const IMG_ADULT = /(uncensor|nsfw|nude|naked|hentai|porn|lewd|erotic|sexy|18+|无删减|擦边)/i;
+const civitaiSafe = (m) => !m.nsfw && !m.poi && !m.minor && (Number(m.nsfwLevel) || 0) <= 3 &&
+  !IMG_ADULT.test(`${m.name} ${(m.tags || []).join(' ')}`);
+const IMG_STRONG = /(ComfyUI|Stable ?Diffusion|SDXL|\bSD ?(1\.5|3(\.5)?|XL)\b|Flux|LoRA|ControlNet|Midjourney|即梦|可图|通义万相|Qwen-?Image|Seedream|Nano ?Banana|GPT-?Image|文生图|图生图|AI ?(绘画|绘图|画图|生图|出图|作画))/i;
+const IMG_WEAK = /(绘画|绘图|出图|生图|海报|工作流|修图|扩图|抠图|换装|商品图|模特图|头像|插画|插图)/;
+const IMG_BILI_POOL = [
+  'ComfyUI 工作流', 'AI绘画 教程', 'Flux 教程', 'LoRA 训练 教程',
+  'Qwen-Image 教程', '即梦 AI 教程', 'Stable Diffusion 教程', 'AI 生图 工作流',
+];
+
+function civitaiRow(m) {
+  const v = (m.modelVersions || [])[0] || {};
+  const cu = m.allowCommercialUse;
+  const uses = Array.isArray(cu) ? cu : String(cu || '').replace(/[{}]/g, '').split(',');
+  return {
+    name: clip(m.name || '', 120),
+    url: `https://civitai.com/models/${m.id}`,
+    type: m.type || '',
+    base: v.baseModel || '',
+    downloads: Number(m.stats?.downloadCount) || 0,
+    likes: Number(m.stats?.thumbsUpCount) || 0,
+    published: (v.publishedAt || '').slice(0, 10),
+    creator: m.creator?.username || '',
+    tags: (m.tags || []).slice(0, 5),
+    commercial: uses.some((u) => /image|sell/i.test(u)),
+  };
+}
+
+async function collectImageGen() {
+  const out = { models: [], api_models: [], workflows: [], community: [], projects: [], videos: [], scanned: {} };
+
+  // 1) Hugging Face 热度榜：huggingface.co 时通时不通，连不上就走 hf-mirror
+  out.models = (await trySource('img:hf', async () => {
+    const seen = new Map();
+    for (const [task, label] of IMG_HF_TASKS) {
+      let rows = null;
+      for (const host of ['https://huggingface.co', 'https://hf-mirror.com']) {
+        try {
+          rows = await fetchJsonWall(`${host}/api/models?pipeline_tag=${task}&sort=trendingScore&limit=20`, { timeout: 20000, tries: 1 });
+          break;
+        } catch { /* 换下一个 */ }
+      }
+      if (!rows) throw new Error('HF 与 hf-mirror 都没连上');
+      for (const m of rows) {
+        const tags = m.tags || [];
+        if (seen.has(m.id) || tags.includes('not-for-all-audiences') || IMG_ADULT.test(m.id)) continue;
+        const base = tags.find((t) => /^base_model:[^:]+\/[^:]+$/.test(t));
+        seen.set(m.id, {
+          name: m.id,
+          url: `https://huggingface.co/${m.id}`,
+          task: label,
+          likes: m.likes || 0,
+          downloads: m.downloads || 0,
+          trending: m.trendingScore || 0,
+          created: (m.createdAt || '').slice(0, 10),
+          license: (tags.find((t) => t.startsWith('license:')) || '').slice(8),
+          base: base ? base.slice(11) : '',
+          lib: m.library_name || '',
+        });
+      }
+    }
+    return [...seen.values()].sort((a, b) => b.trending - a.trending).slice(0, 20);
+  })) || [];
+
+  // 2) API 就能出图的模型（OpenRouter 输出带 image 的），按上架时间倒序
+  out.api_models = (await trySource('img:openrouter', async () => {
+    const j = await fetchJson('https://openrouter.ai/api/v1/models?output_modalities=image', { timeout: 30000 });
+    return (j.data || [])
+      .filter((m) => /->.*image/.test(m.architecture?.modality || ''))
+      .sort((a, b) => (b.created || 0) - (a.created || 0))
+      .slice(0, 14)
+      .map((m) => ({
+        id: m.id,
+        name: m.name || m.id,
+        url: `https://openrouter.ai/${m.id}`,
+        created: m.created ? isoDate(new Date(m.created * 1000)) : '',
+        modality: m.architecture?.modality || '',
+        image_price: m.pricing?.image_output ? +(Number(m.pricing.image_output) * 1e6).toFixed(2) : null,
+      }));
+  })) || [];
+
+  // 3) Civitai：本周下载最多的工作流，和 Checkpoint / LoRA
+  const civitai = async (types, limit) => {
+    const q = types.map((t) => `types=${t}`).join('&');
+    const j = await fetchJsonWall(`https://civitai.com/api/v1/models?limit=${limit}&sort=Most%20Downloaded&period=Week&nsfw=false&${q}`, { timeout: 40000 });
+    const items = j.items || [];
+    return { scanned: items.length, rows: items.filter(civitaiSafe).slice(0, 12).map(civitaiRow) };
+  };
+  const wf = await trySource('img:civitai-workflows', () => civitai(['Workflows'], 60));
+  if (wf) { out.workflows = wf.rows; out.scanned.workflows = wf.scanned; }
+  const cm = await trySource('img:civitai-models', () => civitai(['Checkpoint', 'LORA'], 100));
+  if (cm) { out.community = cm.rows; out.scanned.community = cm.scanned; }
+
+  // 4) GitHub：近 30 天的生图项目 + 最近一周还在更新的 ComfyUI 节点（和主采集错开，别撞搜索限流）
+  out.projects = (await trySource('img:github', async () => {
+    await sleep(12000);
+    const fresh = await githubSearch(
+      `comfyui OR text-to-image OR "image generation" OR "stable diffusion" OR "image editing" in:name,description,topics created:>${daysAgo(30)} stars:>20`,
+      { perPage: 20 },
+    );
+    await sleep(2500);
+    const nodes = await githubSearch(`comfyui in:name,topics pushed:>${daysAgo(7)} created:>${daysAgo(90)} stars:>15`, { perPage: 20 });
+    const byName = new Map();
+    for (const r of nodes) byName.set(r.full_name, { ...r, group: 'ComfyUI 节点' });
+    for (const r of fresh) if (!byName.has(r.full_name)) byName.set(r.full_name, { ...r, group: /comfy/i.test(r.full_name) ? 'ComfyUI 节点' : '生图项目' });
+    return [...byName.values()].sort((a, b) => b.stars_per_day_since_birth - a.stars_per_day_since_birth).slice(0, 18);
+  })) || [];
+
+  // 5) B站中文教程：每天换三个词，各搜「综合」和「最新」两页（综合排序多是老片），
+  //    只留 30 天内、播放过 800、确实在讲生图的
+  out.videos = (await trySource('img:bilibili', async () => {
+    await sleep(14000);
+    const cookie = await biliCookie();
+    const seed = Number(DATE.replace(/-/g, '').slice(-6)) || 1;
+    const kws = [0, 1, 2].map((i) => IMG_BILI_POOL[(seed + i * 3) % IMG_BILI_POOL.length]);
+    const found = new Map();
+    for (const kw of kws) for (const order of ['', '&order=pubdate']) {
+      await sleep(1800);
+      let rows = [];
+      try {
+        const j = await fetchJson(
+          `https://api.bilibili.com/x/web-interface/search/type?search_type=video&page=1${order}&keyword=${encodeURIComponent(kw)}`,
+          { headers: { ...BILI_HEAD, cookie, referer: 'https://search.bilibili.com/' } },
+        );
+        rows = j?.data?.result || [];
+      } catch { continue; }
+      for (const v of rows) {
+        const title = clip(stripTags(String(v.title || '').replace(/<\/?em[^>]*>/g, '')), 130);
+        const days = v.pubdate ? (TAH - v.pubdate * 1000) / 86400000 : 999;
+        if (!v.bvid || found.has(v.bvid) || days > 30 || Number(v.play) < 800) continue;
+        if (BILI_NOISE.test(title) || IMG_ADULT.test(title)) continue;
+        if (!IMG_STRONG.test(title) && !(IMG_WEAK.test(title) && AI_TIGHT.test(title))) continue;
+        found.set(v.bvid, {
+          title,
+          author: v.author || '',
+          url: `https://www.bilibili.com/video/${v.bvid}`,
+          play: Number(v.play) || 0,
+          date: v.pubdate ? isoDate(new Date(v.pubdate * 1000)) : '',
+          why: `搜「${kw}」`,
+        });
+      }
+    }
+    return [...found.values()].sort((a, b) => b.play - a.play).slice(0, 14);
+  })) || [];
+
+  const total = Object.entries(out).filter(([k]) => k !== 'scanned').reduce((n, [, v]) => n + v.length, 0);
+  return { ...out, total };
+}
+
+const TRACK_WORDS =/(windows|win32|win64|\.exe|installer|winget|portable|plugin|插件|batch|批量|gui|\bexe\b|api|sdk|支持|新增)/i;
 
 async function ghJson(url) {
   const res = await fetch(url, {
@@ -1162,6 +1360,47 @@ function renderBrief(pack) {
     P('');
   }
 
+  const ig = pack.imagegen || {};
+  if (ig.total || (ig.models || []).length) {
+    P('## R. AI 生图与工作流（模型 / 能出图的 API / 工作流 / 社区模型 / 开源项目 / 中文教程）', '');
+    P('Civitai 只收 PG / PG-13 且不是真人肖像的条目；HF 热度是"多少人在点"，不等于出图质量', '');
+    if ((ig.models || []).length) {
+      P('### R1. 新模型（Hugging Face 热度榜）', '');
+      ig.models.slice(0, 12).forEach((m, i) => P(
+        `${i + 1}. ${m.name}｜${m.task}｜${m.likes} 赞 · ${fmtCount(m.downloads)} 下载｜${m.created} 建${m.license ? '｜' + m.license : ''}${m.base ? '｜基于 ' + m.base : ''}\n   ${m.url}`));
+      P('');
+    }
+    if ((ig.api_models || []).length) {
+      P('### R2. API 能直接出图的模型（OpenRouter，按上架时间）', '');
+      ig.api_models.slice(0, 10).forEach((m) => P(
+        `- ${m.created} ${m.id}｜${m.modality}${m.image_price != null ? '｜出图 $' + m.image_price + ' / M 图像 token' : ''}`));
+      P('');
+    }
+    if ((ig.workflows || []).length) {
+      P('### R3. 工作流（Civitai 本周下载最多；数字是累计）', '');
+      ig.workflows.forEach((w, i) => P(
+        `${i + 1}. ${w.name}｜${w.base || '?'}｜${fmtCount(w.downloads)} 下载 · ${w.likes} 赞｜${w.published}${w.commercial ? '｜可商用' : ''}\n   ${w.url}`));
+      P('');
+    }
+    if ((ig.community || []).length) {
+      P('### R4. 社区模型 / LoRA（Civitai 本周下载最多）', '');
+      ig.community.forEach((w, i) => P(
+        `${i + 1}. [${w.type}] ${w.name}｜${w.base || '?'}｜${fmtCount(w.downloads)} 下载｜${w.published}\n   ${w.url}`));
+      P('');
+    }
+    if ((ig.projects || []).length) {
+      P('### R5. 开源项目与 ComfyUI 节点（GitHub）', '');
+      ig.projects.forEach((r, i) => P(
+        `${i + 1}. [${r.group}] ${r.full_name} ⭐${r.stars}（${r.created_days_ago}天）｜${clip(r.desc, 110)}\n   ${r.url}`));
+      P('');
+    }
+    if ((ig.videos || []).length) {
+      P('### R6. 中文教程（B站，30 天内、播放过 800）', '');
+      ig.videos.forEach((v, i) => P(`${i + 1}. ${v.title}\n   ${v.author}｜${fmtCount(v.play)}播放｜${v.date}\n   ${v.url}`));
+      P('');
+    }
+  }
+
   const tr = pack.tracked;
   if (tr && (tr.items || []).length) {
     const ch = tr.changes || {};
@@ -1191,7 +1430,7 @@ async function main() {
   console.log(`[radar] collecting ${DATE} ...`);
 
   // 进度：每完成一步打一行「[radar] step 已完成/总数 名称」，应用里的进度条按它走
-  const STEPS = 12;
+  const STEPS = 13;
   let stepsDone = 0;
   const step = (label, p) => Promise.resolve(p).then((v) => {
     stepsDone += 1;
@@ -1199,7 +1438,7 @@ async function main() {
     return v;
   });
 
-  const [ghSrc, models, news, papers, hn, skillsSh, bilibili, zhihu] = await Promise.all([
+  const [ghSrc, models, news, papers, hn, skillsSh, bilibili, zhihu, imagegen] = await Promise.all([
     step('GitHub', trySource('github', collectGitHub).then((v) => v || { new_repos: [], active: [], ai_new: [], skills_raw: [] })),
     step('模型', collectModels()),
     step('新闻', collectNews()),
@@ -1208,6 +1447,7 @@ async function main() {
     step('skills.sh', trySource('skills.sh', collectSkillsSh)),
     step('B站', collectBilibili()),
     step('知乎', collectZhihu()),
+    step('AI 生图', collectImageGen()),
   ]);
   // 联网搜索要用当天的模型名当查询词，所以放在模型结果之后串行跑（约 4 秒）
   const web = await step('联网搜索', collectWeb(models));
@@ -1245,6 +1485,14 @@ async function main() {
   const biliSrc = bilibili || (prev?.bilibili ? { ...prev.bilibili, carried_over: true } : { total: 0, items: [] });
   const zhihuSrc = zhihu || (prev?.zhihu ? { ...prev.zhihu, carried_over: true } : { total: 0, items: [] });
   const webSrc = web || (prev?.web ? { ...prev.web, carried_over: true } : { total: 0, items: [], queries: [] });
+  // 生图：哪一类今天没抓到，就沿用上一份的那一类
+  const imageSrc = { ...imagegen };
+  for (const k of ['models', 'api_models', 'workflows', 'community', 'projects', 'videos']) {
+    if (!(imageSrc[k] || []).length && prev?.imagegen?.[k]?.length) {
+      imageSrc[k] = prev.imagegen[k].map((x) => ({ ...x, carried_over: true }));
+      imageSrc.carried_over = [...(imageSrc.carried_over || []), k];
+    }
+  }
   const frontierSrc = frontier || (prev?.frontier ? { ...prev.frontier, carried_over: true } : { total: 0, today: [], week: [], items: [] });
 
   const tracked = await step('追踪名单', collectTracked(prev));
@@ -1278,6 +1526,7 @@ async function main() {
     zhihu: zhihuSrc,
     web: webSrc,
     frontier: frontierSrc,
+    imagegen: imageSrc,
     first_seen: firstSeen,
     tracked: trackedSrc,
   };
@@ -1307,6 +1556,7 @@ async function main() {
     zhihu: (zhihuSrc.items || []).length,
     web: (webSrc.items || []).length,
     frontier: (frontierSrc.items || []).length,
+    imagegen: ['models', 'api_models', 'workflows', 'community', 'projects', 'videos'].reduce((n, k) => n + (imageSrc[k] || []).length, 0),
     tracked: trackedSrc ? (trackedSrc.items || []).length : 0,
   };
   console.log('[radar] done →', jsonPath);

@@ -14,6 +14,7 @@ const { spawn } = require('node:child_process');
 const os = require('node:os');
 const { pathToFileURL } = require('node:url');
 const { createUpdater } = require('./updater');
+const { createEvents } = require('./events');
 
 // 技能归类规则与采集器共用一份（ai-radar/skills.mjs），避免两边漂移。
 let SKILLS_LIB = null;
@@ -90,6 +91,19 @@ const DEFAULT_CONFIG = {
   summaryAll: false,  // AI 摘要（按栏批量摘要）默认关
   compact: true,      // 简洁模式：收起灰字说明、代码块与思考过程
   webSearch: true,    // 对话时先联网搜一次（Bing RSS），把结果当材料喂给模型
+  tutorVideos: true,  // 对话里问到某个领域怎么学、怎么做时，去 B站找几条教程视频挂在回答下面
+  tplStrip: 'open',   // 简报页的「想直接做点事？」：open 展开 / min 收成一行 / off 不显示
+  briefStyle: 'plain', // 简报的文字风格（plain = 原样，不润色）
+  autoStyle: false,   // 生成简报后自动按 briefStyle 润色一遍
+  ttsEngine: 'system', // 听日报：system 用系统语音（免费、离线）/ api 用兼容 OpenAI 的 /audio/speech
+  ttsVoice: '',       // 系统语音名；空 = 自动挑中文语音
+  ttsRate: 1,
+  ttsPitch: 1,
+  ttsVolume: 1,
+  ttsBase: '',        // 语音接口地址；空 = 用对话的接口地址
+  ttsModel: 'tts-1',
+  ttsApiVoice: 'alloy',
+  ttsKey: '',         // 语音接口 key；空 = 用对话的 key
   priceIn: 0,         // $/百万 token 输入价，填了才估算花费
   priceOut: 0,
   lastNotice: '',
@@ -143,6 +157,20 @@ function publicConfig() {
     summaryAll: config.summaryAll === true,
     compact: config.compact !== false,
     webSearch: config.webSearch !== false,
+    tutorVideos: config.tutorVideos !== false,
+    hasBili: !!String(config.biliSessdata || '').trim(),
+    tplStrip: ['open', 'min', 'off'].includes(config.tplStrip) ? config.tplStrip : 'open',
+    briefStyle: config.briefStyle || 'plain',
+    autoStyle: config.autoStyle === true,
+    ttsEngine: config.ttsEngine === 'api' ? 'api' : 'system',
+    ttsVoice: config.ttsVoice || '',
+    ttsRate: Number(config.ttsRate) || 1,
+    ttsPitch: Number(config.ttsPitch) || 1,
+    ttsVolume: Number(config.ttsVolume ?? 1),
+    ttsBase: config.ttsBase || '',
+    ttsModel: config.ttsModel || 'tts-1',
+    ttsApiVoice: config.ttsApiVoice || 'alloy',
+    hasTtsKey: !!String(config.ttsKey || '').trim(),
     autoUpdateCheck: config.autoUpdateCheck !== false,
     priceIn: Number(config.priceIn) || 0,
     priceOut: Number(config.priceOut) || 0,
@@ -196,7 +224,20 @@ function makeIcon(size) {
 
 /* ------------------------------------------------------------------ collect */
 
-function runCollect() {
+/** Windows 系统代理（Clash 一类会设在这里）。采集器只给直连常被墙的源用（Civitai、Hugging Face）。 */
+async function systemProxy() {
+  try {
+    const { session } = require('electron');
+    const r = await Promise.race([
+      session.defaultSession.resolveProxy('https://civitai.com'),
+      new Promise((ok) => setTimeout(() => ok(''), 2000)),
+    ]);
+    const m = /PROXY\s+([^;\s]+)/i.exec(String(r || ''));
+    return m ? `http://${m[1]}` : '';
+  } catch { return ''; }
+}
+
+async function runCollect() {
   if (isCollecting) return { ok: false, error: '采集已经在跑了，等它结束。' };
   const script = path.join(ROOT, 'collect.mjs');
   if (!exists(script)) return { ok: false, error: `找不到采集器：${script}` };
@@ -205,9 +246,10 @@ function runCollect() {
   const started = Date.now();
   send('collect:log', { line: `开始采集 ${todayStr()} …`, kind: 'head' });
 
+  const proxy = await systemProxy();
   collectChild = spawn(process.execPath, [script], {
     cwd: ROOT,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', ...(proxy ? { RADAR_PROXY: proxy } : {}) },
     windowsHide: true,
   });
 
@@ -245,7 +287,10 @@ function runCollect() {
       send('collect:done', { ok: false, error: '超过 4 分钟没结束，已中止（多半是某个源卡住了）。', seconds });
       return;
     }
-    if (code === 0) send('collect:done', { ok: true, seconds, date: todayStr() });
+    if (code === 0) {
+      send('collect:done', { ok: true, seconds, date: todayStr() });
+      void getEvents().refreshAll({ web: true }).catch((e) => console.error('[radar] events after collect', e));
+    }
     else send('collect:done', { ok: false, error: `采集器退出码 ${code}，看上面的日志。`, seconds });
   });
 
@@ -346,6 +391,7 @@ async function generateDigest(date) {
   if (!brief) throw new Error(`没有 ${date} 的采集原件。先点左边的「开始采集」。`);
   const sys = (await readText(dataPath('prompts', 'app_digest.md'))) || '把原始信息整理成中文情报简报。';
   const prev = await recentDigests(date);
+  const evBlock = await getEvents().digestBlock().catch(() => '');
 
   const userMsg = [
     `今天是 ${date}。`,
@@ -354,6 +400,9 @@ async function generateDigest(date) {
     brief.slice(0, 120_000),
     '</原始采集>',
     prev ? `\n${prev}` : '',
+    evBlock
+      ? `\n<用户正在追踪的事件>\n${evBlock}\n</用户正在追踪的事件>\n在「## 一句话」之后先写一节「## 追踪中的事件」：每个事件 1-3 行写最新进展并给链接；没有新进展就写「今天没动静」。这一节不占后面各节的篇幅。`
+      : '',
     '',
     '按系统提示里的格式，直接输出 Markdown 正文。',
   ].join('\n');
@@ -391,6 +440,10 @@ async function generateDigest(date) {
     await fsp.mkdir(DIR.digests, { recursive: true });
     await fsp.writeFile(path.join(DIR.digests, `${date}.md`), md + '\n', 'utf8');
     await updateIndex(date, md);
+    void digestTitle(date, true).catch(() => {});
+    if (config.autoStyle && config.briefStyle && config.briefStyle !== 'plain') {
+      void applyStyle(date, config.briefStyle, true).catch((e) => console.error('[radar] auto style', e));
+    }
     return { ok: true, markdown: md, seconds: Math.round((Date.now() - started) / 1000) };
   } finally {
     clearInterval(ticker);
@@ -474,6 +527,14 @@ async function buildIndex() {
     for (const z of Array.isArray(d.zhihu?.items) ? d.zhihu.items : []) {
       push('zhihu', z.title, `${z.heat || ''} · 知乎热榜`, z.url);
     }
+    const ig = d.imagegen || {};
+    for (const m of Array.isArray(ig.models) ? ig.models : []) push('model', m.name, `生图模型 · ${m.task || ''} · ${m.base || ''} · Hugging Face`, m.url);
+    for (const m of Array.isArray(ig.api_models) ? ig.api_models : []) push('model', m.name, `能出图的 API · ${m.id} · ${m.modality || ''}`, m.url);
+    for (const w of [...(Array.isArray(ig.workflows) ? ig.workflows : []), ...(Array.isArray(ig.community) ? ig.community : [])]) {
+      push('image', w.name, `${w.type || ''} · 底模 ${w.base || '?'} · ${w.downloads || 0} 下载 · ${(w.tags || []).join(' ')} · Civitai`, w.url);
+    }
+    for (const r of Array.isArray(ig.projects) ? ig.projects : []) push('repo', r.full_name, `${r.group || ''} · ${r.desc || ''}`, r.url, { stars: r.stars, lang: r.lang });
+    for (const v of Array.isArray(ig.videos) ? ig.videos : []) push('video', v.title, `${v.author || ''} · ${v.play || 0} 播放 · 生图教程 · B站`, v.url, { play: v.play });
     // 前沿动态：搜标题能查到「到哪一步了」（论文/有代码/有演示/正式可用）
     if (f === files[0]) {
       for (const x of Array.isArray(d.frontier?.items) ? d.frontier.items : []) {
@@ -575,7 +636,7 @@ async function buildIndex() {
   return IDX;
 }
 
-const KIND_LABEL = { repo: '项目', model: '模型', news: '新闻', paper: '论文', hn: 'HN', digest: '简报', agent: 'agent', concept: '概念', skill: '技能', video: 'B站', zhihu: '知乎', frontier: '前沿', ext: '扩展' };
+const KIND_LABEL = { repo: '项目', model: '模型', news: '新闻', paper: '论文', hn: 'HN', digest: '简报', agent: 'agent', concept: '概念', skill: '技能', video: 'B站', zhihu: '知乎', frontier: '前沿', ext: '扩展', image: '生图' };
 
 function scoreItem(it, tokens) {
   const t = it.title.toLowerCase();
@@ -780,6 +841,8 @@ async function rangePayload(range) {
     orx: new Map(), ollama: new Map(), news: new Map(), papers: new Map(), hn: new Map(),
     bili: new Map(), zhihu: new Map(), frontier: new Map(),
   };
+  const IMG_KEYS = ['models', 'api_models', 'workflows', 'community', 'projects', 'videos'];
+  const imgMaps = Object.fromEntries(IMG_KEYS.map((k) => [k, new Map()]));
   const put = (map, key, item) => {
     if (!key) return;
     const prev = map.get(key);
@@ -825,6 +888,9 @@ async function rangePayload(range) {
     for (const v of d.bilibili?.items || []) put(maps.bili, v.url, { ...v, __d: date });
     for (const z of d.zhihu?.items || []) put(maps.zhihu, z.url, { ...z, __d: date });
     for (const x of d.frontier?.items || []) put(maps.frontier, x.id || x.arxiv || x.title, { ...x, __d: date });
+    for (const k of IMG_KEYS) {
+      for (const x of d.imagegen?.[k] || []) if (!x.carried_over) put(imgMaps[k], x.url, { ...x, __d: date });
+    }
   }
   const list = (m, fn) => [...m.values()]
     .map(({ __d, ...rest }) => rest)
@@ -859,6 +925,14 @@ async function rangePayload(range) {
     total: maps.frontier.size,
     scanned: (latestFrontier && latestFrontier.scanned) || 0,
     status_counts: (latestFrontier && latestFrontier.status_counts) || {},
+  };
+  data.imagegen = {
+    models: list(imgMaps.models, byNum('trending')),
+    api_models: list(imgMaps.api_models, byStr('created')),
+    workflows: list(imgMaps.workflows, byNum('downloads')),
+    community: list(imgMaps.community, byNum('downloads')),
+    projects: list(imgMaps.projects, byNum('stars_per_day_since_birth')),
+    videos: list(imgMaps.videos, byNum('play')),
   };
   data.skills = await buildSkillPack(skillPool, latestSh);
   return {
@@ -1054,6 +1128,16 @@ async function materialsText() {
   if (Array.isArray(zh.items) && zh.items.length) {
     L.push('', '## 知乎热榜（普通人在吵什么；是情绪与需求信号，不是技术事实）');
     zh.items.slice(0, 8).forEach((z) => L.push(`- ${clipText(z.title, 100)}｜${z.heat || ''}｜${z.url}`));
+  }
+  const ig = d.imagegen || {};
+  if ((ig.models || []).length || (ig.workflows || []).length) {
+    L.push('', '## AI 生图与工作流（HF 热度是"多少人在点"，不等于出图质量；Civitai 数字是累计下载）');
+    (ig.models || []).slice(0, 8).forEach((m) => L.push(`- 模型 ${m.name}｜${m.task}｜${m.likes} 赞｜${m.created} 建${m.license ? '｜' + m.license : ''}｜${m.url}`));
+    (ig.api_models || []).slice(0, 6).forEach((m) => L.push(`- API ${m.id}｜${m.modality}｜${m.created} 上架｜${m.url}`));
+    (ig.workflows || []).slice(0, 6).forEach((w) => L.push(`- 工作流 ${clipText(w.name, 90)}｜底模 ${w.base || '?'}｜${w.downloads} 下载｜${w.url}`));
+    (ig.community || []).slice(0, 5).forEach((w) => L.push(`- ${w.type} ${clipText(w.name, 90)}｜底模 ${w.base || '?'}｜${w.downloads} 下载｜${w.url}`));
+    (ig.projects || []).slice(0, 6).forEach((r) => L.push(`- ${r.group} ${r.full_name} ⭐${r.stars}｜${clipText(r.desc, 90)}｜${r.url}`));
+    (ig.videos || []).slice(0, 5).forEach((v) => L.push(`- B站教程 ${clipText(v.title, 90)}｜${v.play} 播放｜${v.url}`));
   }
   const wb = d.web || {};
   if (Array.isArray(wb.items) && wb.items.length) {
@@ -1370,7 +1454,8 @@ async function webSearch(query, count = 6) {
   if (hit && Date.now() - hit.at < WEB_TTL) return hit.rows.slice(0, count);
   const lib = await webLib();
   const rows = await lib.searchWeb(q, { count: Math.max(count, 6) });
-  WEB_CACHE.set(q, { at: Date.now(), rows });
+  // 空结果多半是被限流了，不缓存，下次还能再试
+  if (rows.length) WEB_CACHE.set(q, { at: Date.now(), rows });
   if (WEB_CACHE.size > 120) WEB_CACHE.delete(WEB_CACHE.keys().next().value);
   return rows.slice(0, count);
 }
@@ -1392,6 +1477,830 @@ function webQueriesFromText(text) {
 }
 
 /** 对话里用的：先搜用户这句话，搜不到就换更短的查询词再试一次 */
+/* ---------------------------------------------- 对话里的教程视频推荐 */
+
+const TUTOR_SYS = [
+  '你判断用户这句话要不要配「教程视频」。',
+  '要配：想学、想上手、想知道怎么做/怎么装/怎么用某个工具、软件、技术、技能或领域（例如 ComfyUI 怎么出图、Blender 建模入门、LoRA 怎么训练、像素画怎么画）。',
+  '不配：问新闻、问观点、问价格对比、闲聊、让你写东西、问今天的材料讲了什么。',
+  '要配时给 1-2 个 B站 搜索词：中文为主、工具名保留原文，结尾带「教程」或「入门」，越具体越好，不要整句照抄。',
+  '只输出 JSON：{"want":true,"topic":"简短话题","queries":["搜索词1","搜索词2"]}；不配就输出 {"want":false}。',
+].join('\n');
+
+const TUTOR_WORDS = /(教程|入门|新手|零基础|从零|保姆|手把手|详解|教学|实操|实战|上手|攻略|全流程|讲解|课程|第.{1,3}[课集期节])/;
+const TUTOR_NOISE = /(鬼畜|MV ?大赛|全民制作人|reaction|开箱|抽奖)/i;
+
+let biliBuvid = { cookie: '', at: 0 };
+async function biliCookieCached() {
+  if (biliBuvid.cookie && Date.now() - biliBuvid.at < 6 * 3600e3) return biliBuvid.cookie;
+  const res = await fetch('https://api.bilibili.com/x/frontend/finger/spi', {
+    headers: { 'user-agent': UA, referer: 'https://www.bilibili.com/' },
+    signal: AbortSignal.timeout(15000),
+  });
+  const j = await res.json();
+  if (!j?.data?.b_3) throw new Error('B站没给 buvid');
+  biliBuvid = { cookie: `buvid3=${j.data.b_3}; buvid4=${j.data.b_4 || ''};`, at: Date.now() };
+  return biliBuvid.cookie;
+}
+
+/** B站搜索：综合排序取前 20，去掉太老、太冷门、不像教程的，按「相关度 + 播放 + 新近 + 像教程」打分取前 n 条 */
+async function biliTutorials(queries, n = 5) {
+  const cookie = await biliCookieCached();
+  const found = new Map();
+  const now = Date.now();
+  for (const q of queries.slice(0, 2)) {
+    let rows = [];
+    try {
+      const res = await fetch(`https://api.bilibili.com/x/web-interface/search/type?search_type=video&page=1&keyword=${encodeURIComponent(q)}`, {
+        headers: { 'user-agent': UA, referer: 'https://search.bilibili.com/', 'accept-language': 'zh-CN,zh;q=0.9', cookie },
+        signal: AbortSignal.timeout(15000),
+      });
+      rows = (await res.json())?.data?.result || [];
+    } catch (e) {
+      console.error('[radar] bili tutor search', e);
+      continue;
+    }
+    rows.slice(0, 20).forEach((v, rank) => {
+      const title = String(v.title || '').replace(/<\/?em[^>]*>/g, '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
+      const play = Number(v.play) || 0;
+      const days = v.pubdate ? (now - v.pubdate * 1000) / 86400000 : 9999;
+      if (!v.bvid || found.has(v.bvid) || !title || play < 1000 || days > 730 || TUTOR_NOISE.test(title)) return;
+      const score = (20 - rank) * 0.6 + Math.log10(play) * 2 + (days < 90 ? 3 : days < 365 ? 1.5 : 0) + (TUTOR_WORDS.test(title) ? 4 : 0);
+      found.set(v.bvid, {
+        title: clipText(title, 120),
+        url: `https://www.bilibili.com/video/${v.bvid}`,
+        author: v.author || '',
+        play,
+        duration: (() => {
+          // 搜索结果里的时长是「分:秒」且秒不补零（例如 213:5），换成正常写法
+          const [mi, se] = String(v.duration || '').split(':').map(Number);
+          return Number.isFinite(mi) && Number.isFinite(se) ? mmss(mi * 60 + se) : String(v.duration || '');
+        })(),
+        date: v.pubdate ? new Date(v.pubdate * 1000).toISOString().slice(0, 10) : '',
+        query: q,
+        score,
+      });
+    });
+  }
+  return [...found.values()].sort((a, b) => b.score - a.score).slice(0, n).map(({ score, ...v }) => v);
+}
+
+/** 让模型判断这句要不要配教程、该搜什么；force=true 时（用户自己点了「找教程视频」）一定给搜索词 */
+async function tutorQueries(userText, prevText, force) {
+  const ask = (prevText ? `上一句：${clipText(prevText, 300)}\n` : '') + `这一句：${clipText(userText, 1200)}`;
+  const out = await chatCall(
+    [
+      { role: 'system', content: TUTOR_SYS + (force ? '\n用户已经明确要教程视频：一定输出 want:true 和搜索词。' : '') },
+      { role: 'user', content: ask },
+    ],
+    { temperature: 0, maxTokens: 400 },
+  );
+  const j = parseJSONLoose(out) || {};
+  const queries = (Array.isArray(j.queries) ? j.queries : [])
+    .map((q) => String(q || '').replace(/\s+/g, ' ').trim().slice(0, 40))
+    .filter(Boolean)
+    .slice(0, 2);
+  // 用户自己点了「找教程视频」但模型没给词：拿问题本身去搜
+  if (force && !queries.length) {
+    const q = String(userText).replace(/[？?。！!，,、：:；;"'“”‘’（）()]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 24);
+    if (q) queries.push(`${q} 教程`);
+  }
+  if (!(j.want || force) || !queries.length) return null;
+  return { topic: clipText(String(j.topic || queries[0]), 30), queries };
+}
+
+/** 找到就写回那条回答（按 at 认），并通知页面；没找到也通知，好让页面收起「正在找」 */
+async function tutorFor(date, at, userText, prevText, force) {
+  let result = { at, videos: [], topic: '', queries: [] };
+  try {
+    const q = await tutorQueries(userText, prevText, force);
+    if (q) {
+      const videos = await biliTutorials(q.queries);
+      result = { at, videos, topic: q.topic, queries: q.queries };
+    }
+  } catch (e) {
+    console.error('[radar] tutor', e);
+    result.error = String((e && e.message) || e).slice(0, 120);
+  }
+  const thread = await loadChat(date);
+  const m = thread.messages.find((x) => x.role === 'assistant' && x.at === at);
+  if (m) {
+    m.videos = result.videos;
+    m.videoTopic = result.topic;
+    m.videoQueries = result.queries;
+    await saveChat(date, thread.messages);
+  }
+  send('chat:videos', result);
+  return result;
+}
+
+ipcMain.handle('chat:tutor', async (_e, arg) => {
+  const at = String((arg && arg.at) || '');
+  if (!config.apiKey) return { ok: false, error: '还没填 API key。' };
+  const date = todayStr();
+  const thread = await loadChat(date);
+  const i = thread.messages.findIndex((x) => x.role === 'assistant' && x.at === at);
+  if (i < 0) return { ok: false, error: '找不到这条回答（可能是之前某天的对话）。' };
+  const users = thread.messages.slice(0, i).filter((x) => x.role === 'user');
+  const userText = (users[users.length - 1] || {}).content || '';
+  const prevText = (users[users.length - 2] || {}).content || '';
+  const r = await tutorFor(date, at, userText, prevText, true);
+  return { ok: !r.error, ...r };
+});
+
+/* ---------------------------------------------- 视频学习：AI 概括 / AI 笔记 / AI 总结 */
+
+const VIDEO_AI_DIR = path.join(DIR.state, 'video_ai');
+const NOTES_DIR = path.join(ROOT, 'notes');
+const BILI_MIX = [
+  46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39,
+  12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63,
+  57, 62, 11, 36, 20, 34, 44, 52,
+];
+const BASIS_LABEL = {
+  subtitle: '字幕全文',
+  conclusion: 'B站自带的 AI 总结与分段提纲',
+  meta: '标题、简介、分P目录和热评（没拿到字幕，内容是推断）',
+};
+const bvidOf = (url) => (String(url || '').match(/BV[0-9A-Za-z]{10}/) || [])[0] || '';
+const mmss = (sec) => {
+  const t = Math.max(0, Math.round(Number(sec) || 0));
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const ss = String(t % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+};
+const localStamp = (iso) => {
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())} ${p(t.getHours())}:${p(t.getMinutes())}`;
+};
+const dropThink = (t) => String(t || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+async function biliCookieAll() {
+  const base = await biliCookieCached();
+  const sess = String(config.biliSessdata || '').trim();
+  return sess ? `${base} SESSDATA=${sess};` : base;
+}
+async function biliJson(url, cookie) {
+  const res = await fetch(url, {
+    headers: { 'user-agent': UA, referer: 'https://www.bilibili.com/', 'accept-language': 'zh-CN,zh;q=0.9', cookie },
+    signal: AbortSignal.timeout(15000),
+  });
+  return res.json();
+}
+let biliWbi = { key: '', at: 0 };
+async function biliWbiKey(cookie) {
+  if (biliWbi.key && Date.now() - biliWbi.at < 6 * 3600e3) return biliWbi.key;
+  const nav = await biliJson('https://api.bilibili.com/x/web-interface/nav', cookie);
+  const img = nav?.data?.wbi_img;
+  if (!img) throw new Error('B站没给签名参数');
+  const raw = img.img_url.split('/').pop().split('.')[0] + img.sub_url.split('/').pop().split('.')[0];
+  biliWbi = { key: BILI_MIX.map((i) => raw[i] || '').join('').slice(0, 32), at: Date.now() };
+  return biliWbi.key;
+}
+function wbiQuery(params, key) {
+  const p = new URLSearchParams(params);
+  p.set('wts', String(Math.floor(Date.now() / 1000)));
+  const q = [...p.entries()]
+    .sort((x, y) => x[0].localeCompare(y[0]))
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v).replace(/[!'()*]/g, ''))}`)
+    .join('&');
+  return `${q}&w_rid=${crypto.createHash('md5').update(q + key).digest('hex')}`;
+}
+
+/**
+ * 一条 B站 视频能拿到的全部材料。没登录时 B站 不给字幕也不给它自带的 AI 总结，
+ * 只剩标题、简介、分P目录、标签和热评——这时候的概括是推断，basis 会如实标成 meta。
+ */
+async function videoMaterial(bvid, { light = false } = {}) {
+  const cookie = await biliCookieAll();
+  const key = await biliWbiKey(cookie);
+  const view = await biliJson(`https://api.bilibili.com/x/web-interface/wbi/view?${wbiQuery({ bvid }, key)}`, cookie);
+  if (view.code !== 0 || !view.data) throw new Error(`B站没返回这条视频（${view.code} ${view.message || ''}）`);
+  const d = view.data;
+  const m = {
+    bvid,
+    url: `https://www.bilibili.com/video/${bvid}`,
+    title: d.title || '',
+    owner: d.owner?.name || '',
+    desc: clipText(d.desc || '', 1500),
+    duration: d.duration || 0,
+    pubdate: d.pubdate ? new Date(d.pubdate * 1000).toISOString().slice(0, 10) : '',
+    stat: { view: d.stat?.view || 0, like: d.stat?.like || 0, coin: d.stat?.coin || 0, favorite: d.stat?.favorite || 0, reply: d.stat?.reply || 0 },
+    parts: (d.pages || []).map((p) => ({ part: p.part || '', duration: p.duration || 0, cid: p.cid })),
+    tags: [],
+    comments: [],
+    chapters: [],
+    subtitle: '',
+    subParts: 0,
+    conclusion: null,
+    loggedIn: !!String(config.biliSessdata || '').trim(),
+  };
+  if (light) { m.basis = 'meta'; return m; }
+  try {
+    const t = await biliJson(`https://api.bilibili.com/x/tag/archive/tags?bvid=${bvid}`, cookie);
+    m.tags = (t.data || []).map((x) => x.tag_name).filter(Boolean).slice(0, 12);
+  } catch { /* 标签可有可无 */ }
+  try {
+    const r = await biliJson(`https://api.bilibili.com/x/v2/reply/main?type=1&oid=${d.aid}&mode=3&ps=20`, cookie);
+    m.comments = (r.data?.replies || [])
+      .map((x) => ({ text: clipText(x.content?.message || '', 160), like: x.like || 0 }))
+      .filter((x) => x.text)
+      .sort((a, b) => b.like - a.like)
+      .slice(0, 8);
+  } catch { /* 评论可有可无 */ }
+  // 字幕与章节：没登录只拿得到章节（多数视频也没标）；登录了按分P取字幕，最多前 4 P
+  const parts = m.loggedIn ? m.parts.slice(0, 4) : m.parts.slice(0, 1);
+  const lines = [];
+  for (let i = 0; i < parts.length; i++) {
+    try {
+      const pl = await biliJson(`https://api.bilibili.com/x/player/wbi/v2?${wbiQuery({ bvid, cid: parts[i].cid }, key)}`, cookie);
+      if (i === 0) m.chapters = (pl.data?.view_points || []).map((x) => ({ t: mmss(x.from), text: x.content || '' })).slice(0, 40);
+      const subs = pl.data?.subtitle?.subtitles || [];
+      const pick = subs.find((x) => /^zh|ai-zh/.test(x.lan)) || subs[0];
+      if (pick && pick.subtitle_url) {
+        const u = pick.subtitle_url.startsWith('//') ? 'https:' + pick.subtitle_url : pick.subtitle_url;
+        const body = await biliJson(u, cookie);
+        const rows = (body.body || []).map((x) => `[${mmss(x.from)}] ${x.content}`);
+        if (rows.length) {
+          lines.push(m.parts.length > 1 ? `—— 第 ${i + 1} P：${parts[i].part} ——` : '', ...rows);
+          m.subParts += 1;
+        }
+      }
+    } catch { /* 这一 P 没字幕就跳过 */ }
+  }
+  m.subtitle = clipText(lines.filter(Boolean).join('\n'), 16000);
+  if (m.loggedIn) {
+    try {
+      const c = await biliJson(`https://api.bilibili.com/x/web-interface/view/conclusion/get?${wbiQuery({ bvid, cid: m.parts[0]?.cid, up_mid: d.owner?.mid }, key)}`, cookie);
+      const mr = c.data?.model_result;
+      if (c.code === 0 && mr && (mr.summary || (mr.outline || []).length)) {
+        m.conclusion = {
+          summary: mr.summary || '',
+          outline: (mr.outline || []).map((o) => ({
+            title: o.title || '',
+            t: mmss(o.timestamp),
+            points: (o.part_outline || []).map((p) => `[${mmss(p.timestamp)}] ${p.content}`),
+          })),
+        };
+      }
+    } catch { /* 没有就算了 */ }
+  }
+  m.basis = m.subtitle ? 'subtitle' : m.conclusion ? 'conclusion' : 'meta';
+  return m;
+}
+
+function videoMaterialText(m) {
+  const L = [];
+  L.push(`标题：${m.title}`, `UP 主：${m.owner}｜发布 ${m.pubdate}｜总时长 ${mmss(m.duration)}`);
+  L.push(`数据：${m.stat.view} 播放 · ${m.stat.like} 赞 · ${m.stat.coin} 投币 · ${m.stat.favorite} 收藏 · ${m.stat.reply} 评论`);
+  L.push(`链接：${m.url}`);
+  if (m.tags.length) L.push(`标签：${m.tags.join('、')}`);
+  if (m.desc) L.push('', '简介：', m.desc);
+  if (m.parts.length > 1) {
+    L.push('', `分P目录（共 ${m.parts.length} P）：`);
+    m.parts.slice(0, 60).forEach((p, i) => L.push(`P${i + 1} ${p.part}（${mmss(p.duration)}）`));
+  }
+  if (m.chapters.length) {
+    L.push('', 'UP 主标的章节：');
+    m.chapters.forEach((c) => L.push(`[${c.t}] ${c.text}`));
+  }
+  if (m.conclusion) {
+    L.push('', 'B站自带的 AI 总结：', m.conclusion.summary);
+    m.conclusion.outline.forEach((o) => L.push(`[${o.t}] ${o.title}`, ...o.points.map((p) => '  ' + p)));
+  }
+  if (m.subtitle) L.push('', `字幕（${m.parts.length > 1 ? '前 ' + m.subParts + ' P' : '全片'}，可能截断）：`, m.subtitle);
+  if (m.comments.length) {
+    L.push('', '热评（按点赞；看观众反馈，不当事实）：');
+    m.comments.forEach((c) => L.push(`- ${c.text}（${c.like} 赞）`));
+  }
+  L.push('', `材料依据：${BASIS_LABEL[m.basis]}`);
+  return L.join('\n');
+}
+
+const VIDEO_OVERVIEW_SYS = [
+  '你帮用户快速判断一条教程视频讲了什么、值不值得花时间看。只根据给的材料，不编造材料里没有的内容。',
+  '材料依据是「没拿到字幕」时，第一行写：> 没拿到字幕，以下根据标题、简介、分P目录和评论推断。',
+  '输出 Markdown，固定小节：',
+  '## 一句话（这条视频教会你什么）',
+  '## 讲了什么（按分P或章节列，能给时间点/P号就给）',
+  '## 适合谁 · 要准备什么（基础、软件版本、显卡/显存、要下载的东西；材料没写就写「未说明」）',
+  '## 值不值得看（结合播放、点赞收藏比和热评；指出引流加群、卖课、资料对不上、版本过旧之类的风险）',
+  '## 先看哪几段',
+  '总长 500 字以内，中文，不要客套。',
+].join('\n');
+
+const VIDEO_NOTES_SYS = [
+  '你把一条教程视频整理成可以照着做的学习笔记。只根据给的材料，具体参数、节点名、命令、按钮名原样保留，不编造。',
+  '材料依据是「没拿到字幕」时，第一行写：> 没拿到字幕，这份笔记只是按分P目录和简介整理的提纲，细节要看视频。并且步骤里不要编具体参数，写「视频 P3 里讲」。',
+  '输出 Markdown，固定小节：',
+  '## 学完能做到什么',
+  '## 准备（软件与版本、硬件、要下载的模型/插件/素材）',
+  '## 步骤（编号；每步标时间点或 P 号；关键参数单独一行用代码格式）',
+  '## 关键概念（每个一句话，打比方）',
+  '## 常见坑（来自字幕和热评）',
+  '## 练一练（一个能在一小时内做完的小练习，用来检验学会没有）',
+  '中文，密度优先，不要客套。',
+].join('\n');
+
+const VIDEO_SUMMARY_SYS = [
+  '用户在对话里问了一个想学的东西，下面是为他找到的几条 B站 教程视频。你帮他把这几条串成一条学习路线。只根据材料，不编造。',
+  '输出 Markdown，固定小节：',
+  '## 先看哪条（按顺序 1→2→3，每条一句话说为什么排在这里、看哪几段）',
+  '## 对比（表格：视频｜讲什么｜适合谁｜时长｜注意）',
+  '## 可以先跳过的（哪条、为什么：太旧、引流卖课、和问题不对口……）',
+  '## 看完以后动手做（一个具体的小练习）',
+  '有的视频只有标题和简介（没字幕）时，在对比表的「注意」里写「内容是推断」。总长 600 字以内。',
+].join('\n');
+
+ipcMain.handle('video:ai', async (_e, arg) => {
+  const url = String((arg && arg.url) || '');
+  const mode = arg && arg.mode === 'notes' ? 'notes' : 'overview';
+  const bvid = bvidOf(url);
+  if (!bvid) return { ok: false, error: '目前只支持 B站 视频（链接里要有 BV 号）。' };
+  const file = path.join(VIDEO_AI_DIR, `${bvid}.json`);
+  const cache = (await readJSON(file, null)) || {};
+  if (cache[mode] && !(arg && arg.force)) return { ok: true, cached: true, bvid, mode, title: cache.title, url: cache.url, meta: cache.meta, ...cache[mode] };
+  if (!config.apiKey) return { ok: false, error: '要先在「设置」里填 API key，才能用 AI 概括和 AI 笔记。' };
+  try {
+    const m = await videoMaterial(bvid);
+    const raw = await chatCall(
+      [
+        { role: 'system', content: mode === 'notes' ? VIDEO_NOTES_SYS : VIDEO_OVERVIEW_SYS },
+        { role: 'user', content: videoMaterialText(m) },
+      ],
+      { temperature: 0.3, maxTokens: mode === 'notes' ? 2600 : 1200, onDelta: (t) => send('video:delta', { key: `${bvid}:${mode}`, text: t }) },
+    );
+    const out = { text: dropThink(raw), at: new Date().toISOString(), basis: m.basis, basisLabel: BASIS_LABEL[m.basis], loggedIn: m.loggedIn };
+    cache.title = m.title;
+    cache.url = m.url;
+    cache.meta = { owner: m.owner, duration: mmss(m.duration), parts: m.parts.length, view: m.stat.view, pubdate: m.pubdate };
+    cache[mode] = out;
+    await writeJSONFile(file, cache);
+    return { ok: true, bvid, mode, title: m.title, url: m.url, meta: cache.meta, ...out };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e).slice(0, 200) };
+  }
+});
+
+ipcMain.handle('video:summary', async (_e, arg) => {
+  const at = String((arg && arg.at) || '');
+  const date = todayStr();
+  const thread = await loadChat(date);
+  const i = thread.messages.findIndex((x) => x.role === 'assistant' && x.at === at);
+  if (i < 0) return { ok: false, error: '找不到这条回答（可能是之前某天的对话）。' };
+  const msg = thread.messages[i];
+  if (msg.videoSummary && !(arg && arg.force)) return { ok: true, cached: true, ...msg.videoSummary };
+  const videos = (msg.videos || []).slice(0, 6);
+  if (!videos.length) return { ok: false, error: '这条回答下面还没有教程视频。' };
+  if (!config.apiKey) return { ok: false, error: '要先在「设置」里填 API key。' };
+  const question = ((thread.messages.slice(0, i).filter((x) => x.role === 'user').pop()) || {}).content || '';
+  try {
+    const blocks = [];
+    for (const [k, v] of videos.entries()) {
+      const bvid = bvidOf(v.url);
+      const cache = bvid ? await readJSON(path.join(VIDEO_AI_DIR, `${bvid}.json`), null) : null;
+      let body = '';
+      if (cache && (cache.overview || cache.notes)) {
+        body = `已有的 AI 概括：\n${clipText((cache.overview || cache.notes).text, 1200)}`;
+      } else if (bvid) {
+        try {
+          const m = await videoMaterial(bvid, { light: true });
+          body = [`简介：${clipText(m.desc, 400)}`, m.parts.length > 1 ? `分P：${m.parts.slice(0, 15).map((p, j) => `P${j + 1} ${p.part}`).join('；')}` : '', '（只有标题、简介和分P，没有字幕）'].filter(Boolean).join('\n');
+        } catch { body = '（没取到详情）'; }
+      }
+      blocks.push(`### 视频 ${k + 1}：${v.title}\nUP 主 ${v.author}｜${v.play} 播放｜时长 ${v.duration}｜发布 ${v.date}｜${v.url}\n${body}`);
+    }
+    const raw = await chatCall(
+      [
+        { role: 'system', content: VIDEO_SUMMARY_SYS },
+        { role: 'user', content: `用户的问题：${clipText(question, 600)}\n\n${blocks.join('\n\n')}` },
+      ],
+      { temperature: 0.3, maxTokens: 1800, onDelta: (t) => send('video:delta', { key: `sum:${at}`, text: t }) },
+    );
+    const out = { text: dropThink(raw), at: new Date().toISOString(), count: videos.length };
+    const fresh = await loadChat(date);
+    const m2 = fresh.messages.find((x) => x.role === 'assistant' && x.at === at);
+    if (m2) { m2.videoSummary = out; await saveChat(date, fresh.messages); }
+    return { ok: true, ...out };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e).slice(0, 200) };
+  }
+});
+
+/** 把 AI 笔记（没有就用概括）存成 notes/ 里的一份 Markdown */
+ipcMain.handle('video:save-note', async (_e, arg) => {
+  const bvid = bvidOf(arg && arg.url);
+  const cache = bvid ? await readJSON(path.join(VIDEO_AI_DIR, `${bvid}.json`), null) : null;
+  const part = cache && (cache.notes || cache.overview);
+  if (!part) return { ok: false, error: '先生成 AI 笔记或 AI 概括，再存。' };
+  const safe = String(cache.title || bvid).replace(/[\\/:*?"<>|\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const p = path.join(NOTES_DIR, `${todayStr()} ${safe}.md`);
+  const head = [
+    `# ${cache.title || bvid}`,
+    '',
+    `- 视频：${cache.url}`,
+    cache.meta ? `- UP 主：${cache.meta.owner}｜时长 ${cache.meta.duration}｜${cache.meta.parts} P｜发布 ${cache.meta.pubdate}` : '',
+    `- 依据：${part.basisLabel || ''}`,
+    `- 生成：${localStamp(part.at)}（AI 情报台 · ${cache.notes ? 'AI 笔记' : 'AI 概括'}）`,
+    '',
+  ].filter((x) => x !== '');
+  await fsp.mkdir(NOTES_DIR, { recursive: true });
+  await fsp.writeFile(p, head.join('\n') + '\n\n' + part.text + '\n', 'utf8');
+  return { ok: true, path: p, name: path.basename(p) };
+});
+
+/* ---------------------------------------------- B站 账号：继续学习 + 每日推荐 */
+
+const BILI_LEARN_FILE = path.join(DIR.state, 'bili_learn.json');
+
+async function biliAccount() {
+  if (!String(config.biliSessdata || '').trim()) return { login: false, reason: 'nocookie' };
+  const cookie = await biliCookieAll();
+  const nav = await biliJson('https://api.bilibili.com/x/web-interface/nav', cookie);
+  if (!nav?.data?.isLogin) return { login: false, reason: 'expired' };
+  return { login: true, mid: nav.data.mid, uname: nav.data.uname || '', cookie };
+}
+
+/** 观看历史里的进度：秒；-1 表示看完了 */
+async function biliProgressMap(cookie) {
+  const map = new Map();
+  let cur = '';
+  for (let i = 0; i < 3; i++) {
+    const j = await biliJson(`https://api.bilibili.com/x/web-interface/history/cursor?ps=30&type=archive${cur}`, cookie);
+    const list = j?.data?.list || [];
+    for (const h of list) {
+      const bv = h.history?.bvid;
+      if (bv && !map.has(bv)) map.set(bv, { progress: Number(h.progress) || 0, duration: Number(h.duration) || 0, viewAt: Number(h.view_at) || 0 });
+    }
+    const c = j?.data?.cursor;
+    if (!c || !list.length || !c.max) break;
+    cur = `&max=${c.max}&view_at=${c.view_at}&business=${c.business || 'archive'}`;
+  }
+  return map;
+}
+
+async function biliFavItems(acct) {
+  const out = [];
+  const folders = (await biliJson(`https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=${acct.mid}`, acct.cookie))?.data?.list || [];
+  for (const f of folders.slice(0, 6)) {
+    try {
+      const j = await biliJson(`https://api.bilibili.com/x/v3/fav/resource/list?media_id=${f.id}&pn=1&ps=20&order=mtime&type=0&platform=web`, acct.cookie);
+      for (const m of j?.data?.medias || []) {
+        if (!m.bvid || m.type !== 2 || /已失效/.test(m.title || '')) continue;
+        out.push({ bvid: m.bvid, title: m.title || '', duration: Number(m.duration) || 0, upper: m.upper?.name || '', addedAt: Number(m.fav_time) || 0, folder: f.title || '收藏夹' });
+      }
+    } catch { /* 单个收藏夹失败跳过 */ }
+  }
+  try {
+    const t = await biliJson('https://api.bilibili.com/x/v2/history/toview', acct.cookie);
+    for (const m of t?.data?.list || []) {
+      out.push({ bvid: m.bvid, title: m.title || '', duration: Number(m.duration) || 0, upper: m.owner?.name || '', addedAt: Number(m.add_at) || 0, folder: '稍后再看', progress: Number(m.progress) || 0 });
+    }
+  } catch { /* 稍后再看可有可无 */ }
+  return out;
+}
+
+/** B站 搜最近几天的新视频（资讯类），按播放挑 */
+async function biliFresh(q, n = 2, days = 10) {
+  const cookie = await biliCookieCached();
+  const res = await fetch(`https://api.bilibili.com/x/web-interface/search/type?search_type=video&page=1&order=pubdate&keyword=${encodeURIComponent(q)}`, {
+    headers: { 'user-agent': UA, referer: 'https://search.bilibili.com/', 'accept-language': 'zh-CN,zh;q=0.9', cookie },
+    signal: AbortSignal.timeout(15000),
+  });
+  const rows = (await res.json())?.data?.result || [];
+  return rows
+    .map((v) => ({
+      title: String(v.title || '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim(),
+      url: `https://www.bilibili.com/video/${v.bvid}`,
+      bvid: v.bvid,
+      author: v.author || '',
+      play: Number(v.play) || 0,
+      date: v.pubdate ? new Date(v.pubdate * 1000).toISOString().slice(0, 10) : '',
+      age: v.pubdate ? (Date.now() - v.pubdate * 1000) / 86400000 : 999,
+    }))
+    .filter((v) => v.bvid && v.age <= days && v.play >= 300 && !TUTOR_NOISE.test(v.title))
+    .sort((a, b) => b.play - a.play)
+    .slice(0, n)
+    .map(({ age, ...v }) => v);
+}
+
+async function biliLearn(force) {
+  const today = todayStr();
+  const cache = await readJSON(BILI_LEARN_FILE, null);
+  if (cache && cache.date === today && !force) return { ok: true, cached: true, ...cache };
+  const out = { date: today, at: new Date().toISOString(), login: false, uname: '', reason: '', cont: [], unfinished: 0, picks: [], topics: [] };
+  let acct = { login: false, reason: 'nocookie' };
+  try { acct = await biliAccount(); } catch { acct = { login: false, reason: 'error' }; }
+  out.login = acct.login;
+  out.uname = acct.uname || '';
+  out.reason = acct.reason || '';
+  const known = new Set();
+  if (acct.login) {
+    const [favs, prog] = await Promise.all([biliFavItems(acct).catch(() => []), biliProgressMap(acct.cookie).catch(() => new Map())]);
+    prog.forEach((_, k) => known.add(k));
+    const rows = [];
+    for (const f of favs) {
+      if (known.has(f.bvid) && !prog.has(f.bvid)) continue;
+      known.add(f.bvid);
+      if (rows.some((r) => r.bvid === f.bvid)) continue;
+      const p = prog.get(f.bvid);
+      const dur = f.duration || (p && p.duration) || 0;
+      const at = p ? p.progress : (f.progress || 0);
+      const done = at === -1 || (dur > 0 && at >= dur * 0.9);
+      const learnish = TUTOR_WORDS.test(f.title) || dur >= 600;
+      if (done || !learnish) continue;
+      const sec = Math.max(0, at);
+      rows.push({
+        bvid: f.bvid,
+        title: clipText(f.title, 100),
+        upper: f.upper,
+        folder: f.folder,
+        url: `https://www.bilibili.com/video/${f.bvid}${sec > 30 ? '?t=' + sec : ''}`,
+        progress: sec,
+        pct: dur ? Math.min(99, Math.round((sec / dur) * 100)) : 0,
+        durationText: mmss(dur),
+        progressText: sec ? mmss(sec) : '',
+        lastView: p ? p.viewAt : 0,
+        addedAt: f.addedAt,
+      });
+    }
+    rows.sort((a, b) => (b.lastView ? 1 : 0) - (a.lastView ? 1 : 0) || b.lastView - a.lastView || b.addedAt - a.addedAt);
+    out.unfinished = rows.length;
+    out.cont = rows.slice(0, 6);
+  }
+  // 每日推荐：按「需求雷达」里记下的需求去搜；没有需求就按项目描述
+  const prof = await loadProfile();
+  const topics = [...prof.needs]
+    .sort((a, b) => b.weight - a.weight)
+    .map((n) => ((n.keywords || []).slice(0, 2).join(' ') || n.topic || '').slice(0, 20).trim())
+    .filter(Boolean);
+  if (!topics.length && prof.project.summary) topics.push(clipText(prof.project.summary, 14));
+  // 有模型时让它把需求改写成 B站 搜得到东西的词（关键词直接拼常常搜偏）；一天只算一次
+  let plan = [...new Set(topics)].slice(0, 3).map((t) => ({ topic: t, tutorial: `${t} 教程`, news: t }));
+  if (config.apiKey && prof.needs.length) {
+    try {
+      const raw = await chatCall(
+        [
+          { role: 'system', content: '把用户记下的学习/工作需求改写成 B站 搜索词。只输出 JSON：{"items":[{"topic":"6 字内的话题名","tutorial":"搜教程用的词（2-5 个词，带「教程」或「入门」）","news":"搜最新资讯用的词（2-4 个词）"}]}，最多 3 项，按重要程度排。' },
+          { role: 'user', content: prof.needs.slice(-8).map((n) => `- ${n.topic}｜${n.detail || ''}｜关键词 ${(n.keywords || []).join(' ')}`).join('\n') },
+        ],
+        { temperature: 0, maxTokens: 500 },
+      );
+      const j = parseJSONLoose(dropThink(raw));
+      const items = (j && Array.isArray(j.items) ? j.items : []).filter((x) => x && x.tutorial).slice(0, 3);
+      if (items.length) plan = items.map((x) => ({ topic: clipText(String(x.topic || x.tutorial), 10), tutorial: String(x.tutorial).slice(0, 30), news: String(x.news || x.topic || '').slice(0, 24) }));
+    } catch { /* 用关键词兜底 */ }
+  }
+  out.topics = plan.map((p) => p.topic);
+  const picks = [];
+  for (const p of plan) {
+    try { (await biliTutorials([p.tutorial], 3)).forEach((v) => picks.push({ ...v, kind: '教程', topic: p.topic })); } catch { /* 跳过 */ }
+    if (p.news) { try { (await biliFresh(p.news, 2)).forEach((v) => picks.push({ ...v, kind: '资讯', topic: p.topic })); } catch { /* 跳过 */ } }
+  }
+  const seenPick = new Set();
+  out.picks = picks.filter((v) => {
+    const bv = bvidOf(v.url);
+    if (!bv || known.has(bv) || seenPick.has(bv)) return false;
+    seenPick.add(bv);
+    return true;
+  }).slice(0, 10);
+  await writeJSONFile(BILI_LEARN_FILE, out);
+  return { ok: true, ...out };
+}
+
+ipcMain.handle('bili:learn', async (_e, arg) => {
+  try { return await biliLearn(!!(arg && arg.force)); } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 160) }; }
+});
+
+/* ---------------------------------------------- 简报短标题 */
+
+const TITLE_FILE = path.join(DIR.state, 'digest_titles.json');
+
+function ruleTitle(md) {
+  const m = String(md || '').match(/##\s*一句话\s*\n+([\s\S]*?)(?=\n##\s|$)/);
+  let t = (m ? m[1] : '').replace(/\s+/g, ' ').replace(/[*`#>]/g, '').trim();
+  t = t.split(/[；;。！？!?]/)[0] || t;
+  if (t.length > 18) t = t.split(/[，,：:（(]/)[0] || t;
+  return t.slice(0, 18);
+}
+
+async function digestTitle(date, force) {
+  const md = await readText(path.join(DIR.digests, `${date}.md`));
+  if (!md) return { ok: false, error: '没有这天的简报。' };
+  const db = (await readJSON(TITLE_FILE, null)) || {};
+  if (db[date] && db[date].title && !force) return { ok: true, title: db[date].title, by: db[date].by };
+  if (!config.apiKey) return { ok: true, title: ruleTitle(md), by: 'rule' };
+  const raw = await chatCall(
+    [
+      { role: 'system', content: '给这份 AI 情报简报起一个报纸头版式的标题：14 字以内，点出今天最重要的那件事；不要日期，不要「今日」「AI 情报」「简报」这类字样，不要句号。只输出标题本身。' },
+      { role: 'user', content: md.slice(0, 5000) },
+    ],
+    { temperature: 0.4, maxTokens: 300 },
+  );
+  const t = dropThink(raw).split('\n').map((x) => x.trim()).find(Boolean) || '';
+  const title = t.replace(/^[#\s"“《「]+|[\s"”》」。.]+$/g, '').slice(0, 22);
+  if (!title) return { ok: true, title: ruleTitle(md), by: 'rule' };
+  db[date] = { title, by: 'model', at: new Date().toISOString() };
+  await writeJSONFile(TITLE_FILE, db);
+  return { ok: true, title, by: 'model' };
+}
+
+ipcMain.handle('digest:title', async (_e, arg) => {
+  try { return await digestTitle(String((arg && arg.date) || todayStr()), !!(arg && arg.force)); }
+  catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 160) }; }
+});
+
+/* ---------------------------------------------- 便利贴 */
+
+const STICKY_FILE = path.join(DIR.state, 'stickies.json');
+const stickyLoad = async () => { const db = (await readJSON(STICKY_FILE, null)) || {}; return { notes: Array.isArray(db.notes) ? db.notes : [] }; };
+
+ipcMain.handle('sticky:list', async () => stickyLoad());
+ipcMain.handle('sticky:save', async (_e, n) => {
+  const db = await stickyLoad();
+  const now = new Date().toISOString();
+  let it = n && n.id ? db.notes.find((x) => x.id === n.id) : null;
+  if (!it) {
+    it = { id: crypto.randomBytes(5).toString('hex'), at: now, color: 'paper', pinned: false };
+    db.notes.unshift(it);
+  }
+  if (typeof n.text === 'string') it.text = n.text.slice(0, 4000);
+  if (['paper', 'signal', 'ink'].includes(n.color)) it.color = n.color;
+  if (typeof n.pinned === 'boolean') it.pinned = n.pinned;
+  if (n.source && n.source.url) it.source = { url: String(n.source.url).slice(0, 500), title: String(n.source.title || '').slice(0, 200) };
+  it.updated = now;
+  if (db.notes.length > 200) db.notes = db.notes.slice(0, 200);
+  await writeJSONFile(STICKY_FILE, db);
+  return { ok: true, note: it, notes: db.notes };
+});
+ipcMain.handle('sticky:del', async (_e, id) => {
+  const db = await stickyLoad();
+  db.notes = db.notes.filter((x) => x.id !== id);
+  await writeJSONFile(STICKY_FILE, db);
+  return { ok: true, notes: db.notes };
+});
+
+/* ---------------------------------------------- 简报的文字风格（先写好格式，再单独润一遍色） */
+
+const STYLES_DIR = path.join(ROOT, 'styles');
+const STYLED_DIR = path.join(DIR.digests, 'styled');
+const BUILTIN_STYLES = [
+  { id: 'plain', name: '原样', desc: '不润色，就是原版', prompt: '' },
+  { id: 'radio', name: '口播稿', desc: '适合「听日报」：短句、口语、不念链接', prompt: '改写成电台早间播报的口播稿：短句，口语，一段只讲一件事；链接、代码、表格改成一句话带过（例如「链接在原文里」）。开头一句问好，结尾一句收尾。' },
+  { id: 'telegram', name: '电报体', desc: '更短，只留结论', prompt: '压缩成电报体：每条只留结论和一个关键数字，删掉形容词和铺垫，整体长度砍到原来的一半以下。' },
+  { id: 'friend', name: '朋友聊天', desc: '像懂行的朋友跟你讲', prompt: '改写成懂行的朋友在微信上跟你聊今天的新鲜事：第二人称，有一点个人判断和吐槽，但不夸张，不用「家人们」「宝子」这类网络腔。' },
+  { id: 'catgirl', name: '猫娘', desc: '可爱的猫娘播报员', prompt: '用可爱的猫娘播报员口吻改写：句尾偶尔加「喵」（每段最多一两次，别每句都加），语气活泼亲切，可以称呼读者「主人」；事实、数字、专有名词一个都不能改，专业判断照样保留。' },
+  { id: 'oldpaper', name: '老派报纸', desc: '严肃克制的社论腔', prompt: '改写成严肃克制的老派报纸文风：导语先行，第三人称，少用感叹，措辞稳重，像经济日报科技版。' },
+];
+const STYLE_RULES = [
+  '你是文字编辑，只改文风，不改内容。下面是一份已经写好的 Markdown 简报和一个文风要求。',
+  '硬规则：1) 事实、数字、日期、专有名词、链接一个都不改、不增、不删；2) 保留原来的小节和顺序（小节标题措辞可以按文风微调，但不能合并或删掉）；3) 不加入原文没有的信息和评价；4) 直接输出完整的 Markdown，不要前言和解释。',
+].join('\n');
+
+/** styles/ 里每个 .md 是一个风格：开头 --- name: / description: ---，正文就是文风要求（和 SKILL.md 一个写法） */
+async function userStyles() {
+  let files = [];
+  try { files = (await fsp.readdir(STYLES_DIR)).filter((f) => /\.md$/i.test(f)); } catch { return []; }
+  const out = [];
+  for (const f of files.slice(0, 50)) {
+    const raw = (await readText(path.join(STYLES_DIR, f))) || '';
+    const fm = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
+    const meta = {};
+    if (fm) for (const line of fm[1].split('\n')) { const m = line.match(/^(\w+)\s*:\s*(.*)$/); if (m) meta[m[1]] = m[2].trim(); }
+    const prompt = (fm ? raw.slice(fm[0].length) : raw).trim();
+    if (!prompt) continue;
+    out.push({ id: 'u:' + f.replace(/\.md$/i, ''), name: meta.name || f.replace(/\.md$/i, ''), desc: meta.description || '', prompt, file: f, user: true });
+  }
+  return out;
+}
+async function allStyles() { return [...BUILTIN_STYLES, ...(await userStyles())]; }
+const styledPath = (date, id) => path.join(STYLED_DIR, `${date}.${id.replace(/[^\w\u4e00-\u9fa5-]+/g, '_')}.md`);
+
+async function applyStyle(date, id, force) {
+  if (!id || id === 'plain') return { ok: true, plain: true };
+  const st = (await allStyles()).find((x) => x.id === id);
+  if (!st) return { ok: false, error: '找不到这个风格。' };
+  const p = styledPath(date, id);
+  const cached = await readText(p);
+  if (cached && !force) return { ok: true, cached: true, text: cached, style: { id: st.id, name: st.name } };
+  if (!config.apiKey) return { ok: false, error: '润色要用模型，先在「设置」里填 API key。' };
+  const md = await readText(path.join(DIR.digests, `${date}.md`));
+  if (!md) return { ok: false, error: '这天还没有简报。' };
+  const raw = await chatCall(
+    [
+      { role: 'system', content: `${STYLE_RULES}\n\n<文风要求「${st.name}」>\n${st.prompt}\n</文风要求>` },
+      { role: 'user', content: md },
+    ],
+    { temperature: 0.7, maxTokens: 4200, onDelta: (t) => send('style:delta', { key: `${date}:${id}`, text: t }) },
+  );
+  const text = dropThink(raw);
+  if (!text) return { ok: false, error: '模型没返回内容。' };
+  await fsp.mkdir(STYLED_DIR, { recursive: true });
+  await fsp.writeFile(p, text + '\n', 'utf8');
+  return { ok: true, text, style: { id: st.id, name: st.name } };
+}
+
+ipcMain.handle('style:list', async () => ({ styles: (await allStyles()).map(({ prompt, ...x }) => ({ ...x, prompt: x.user ? prompt : '' })) }));
+ipcMain.handle('style:apply', async (_e, arg) => {
+  try { return await applyStyle(String(arg.date || todayStr()), String(arg.id || 'plain'), !!arg.force); }
+  catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200) }; }
+});
+ipcMain.handle('style:save', async (_e, arg) => {
+  const name = String((arg && arg.name) || '').trim().slice(0, 20);
+  const prompt = String((arg && arg.prompt) || '').trim().slice(0, 3000);
+  if (!name || !prompt) return { ok: false, error: '名字和文风要求都要写。' };
+  const slug = name.replace(/[\\/:*?"<>|\s]+/g, '-').slice(0, 30) || 'style';
+  await fsp.mkdir(STYLES_DIR, { recursive: true });
+  const body = `---\nname: ${name}\ndescription: ${String(arg.desc || '').replace(/\n/g, ' ').slice(0, 60)}\n---\n\n${prompt}\n`;
+  await fsp.writeFile(path.join(STYLES_DIR, `${slug}.md`), body, 'utf8');
+  return { ok: true, id: 'u:' + slug };
+});
+
+/* ---------------------------------------------- 听日报：自定义语音接口（兼容 OpenAI 的 /audio/speech） */
+
+ipcMain.handle('tts:speak', async (_e, arg) => {
+  const text = String((arg && arg.text) || '').slice(0, 3500);
+  if (!text.trim()) return { ok: false, error: '空文本。' };
+  const base = String(config.ttsBase || config.baseUrl || '').replace(/\/+$/, '');
+  const key = String(config.ttsKey || config.apiKey || '').trim();
+  if (!base || !key) return { ok: false, error: '语音接口还没配好：在「设置 → 听日报」填接口地址和 key（或者换回系统语音）。' };
+  try {
+    const res = await fetch(`${base}/audio/speech`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model: config.ttsModel || 'tts-1', voice: config.ttsApiVoice || 'alloy', input: text, response_format: 'mp3', speed: Number(config.ttsRate) || 1 }),
+      signal: AbortSignal.timeout(90000),
+    });
+    if (!res.ok) return { ok: false, error: `语音接口返回 ${res.status}：${(await res.text()).slice(0, 200)}` };
+    const buf = Buffer.from(await res.arrayBuffer());
+    return { ok: true, mime: (res.headers.get('content-type') || 'audio/mpeg').split(';')[0], b64: buf.toString('base64') };
+  } catch (e) {
+    return { ok: false, error: `语音接口没连上：${String((e && e.message) || e).slice(0, 160)}` };
+  }
+});
+
+/* ---------------------------------------------- 事件追踪 / 事件图景 */
+
+const EVENT_REPORT_DIR = path.join(DIR.digests, 'events');
+
+async function eventPool(days) {
+  const idx = await buildIndex();
+  const cut = shiftDate(days);
+  const rows = idx.items
+    .filter((it) => it.date >= cut && /^https?:/.test(it.url || ''))
+    .map((it) => ({ kind: it.kind, title: it.title, summary: it.sub, url: it.url, date: it.date, source: KIND_LABEL[it.kind] || it.kind }));
+  const pack = await readJSON(path.join(DIR.data, `${todayStr()}.json`), null);
+  for (const w of pack?.web?.items || []) rows.push({ kind: 'web', title: w.title, summary: w.desc || '', url: w.url, date: todayStr(), source: w.host || '联网搜索' });
+  return rows;
+}
+async function eventSearchLocal(q, n) {
+  const idx = await buildIndex();
+  const tokens = String(q || '').toLowerCase().split(/\s+/).filter((t) => t.length >= 2);
+  if (!tokens.length) return [];
+  return idx.items
+    .filter((it) => { const h = `${it.title} ${it.sub}`.toLowerCase(); return tokens.every((t) => h.includes(t)); })
+    .sort((a, b) => (a.date < b.date ? 1 : -1))
+    .slice(0, n);
+}
+
+let EVENTS = null;
+const getEvents = () => EVENTS || (EVENTS = createEvents({
+  DIR, readJSON, chatCall, webSearch, send, clipText, parseJSONLoose, todayStr,
+  hasKey: () => !!config.apiKey,
+  poolItems: eventPool,
+  searchLocal: eventSearchLocal,
+  profileText: async () => profileSummary(await loadProfile()),
+  // 新闻搜索要走系统代理（见 events.js 的 newsSearch）；命令行环境里认 HTTPS_PROXY
+  getProxy: async () => (await systemProxy()) || process.env.HTTPS_PROXY || process.env.https_proxy || '',
+}));
+
+const evErr = (e) => ({ ok: false, error: String((e && e.message) || e).slice(0, 200) });
+ipcMain.handle('events:list', async () => { try { return { ok: true, ...(await getEvents().load()) }; } catch (e) { return evErr(e); } });
+ipcMain.handle('events:create', async (_e, seed) => { try { return await getEvents().create(seed || {}); } catch (e) { return evErr(e); } });
+ipcMain.handle('events:update', async (_e, arg) => { try { return await getEvents().update(String(arg.id || ''), arg || {}); } catch (e) { return evErr(e); } });
+ipcMain.handle('events:remove', async (_e, id) => { try { return await getEvents().remove(String(id || '')); } catch (e) { return evErr(e); } });
+ipcMain.handle('events:refresh', async (_e, id) => {
+  try { return id ? await getEvents().refreshNow(String(id)) : await getEvents().refreshAll({ web: true }); } catch (e) { return evErr(e); }
+});
+ipcMain.handle('events:report', async (_e, id) => { try { return await getEvents().report(String(id || '')); } catch (e) { return evErr(e); } });
+ipcMain.handle('events:save-report', async (_e, id) => {
+  const db = await getEvents().load();
+  const ev = db.events.find((x) => x.id === id);
+  if (!ev || !ev.report) return { ok: false, error: '先生成报告。' };
+  await fsp.mkdir(EVENT_REPORT_DIR, { recursive: true });
+  const safe = String(ev.title).replace(/[\\/:*?"<>|\s]+/g, ' ').trim().slice(0, 40);
+  const p = path.join(EVENT_REPORT_DIR, `${todayStr()} ${safe}.md`);
+  await fsp.writeFile(p, `# 事件链报告：${ev.title}\n\n- 生成：${String(ev.report.at).slice(0, 16).replace('T', ' ')}（UTC）｜${ev.report.count} 篇报道\n\n${ev.report.text}\n`, 'utf8');
+  return { ok: true, path: p, name: path.basename(p) };
+});
+ipcMain.handle('pano:get', async (_e, arg) => {
+  try { return await getEvents().panorama((arg && arg.seed) || {}, { force: !!(arg && arg.force) }); } catch (e) { return evErr(e); }
+});
+ipcMain.handle('pano:key', async (_e, seed) => getEvents().panoKeyOf(seed || {}));
+
 async function chatWebHits(text) {
   if (config.webSearch === false) return [];
   const queries = webQueriesFromText(text);
@@ -1991,12 +2900,17 @@ ipcMain.handle('chat:send', async (_e, arg) => {
     await saveChat(date, thread.messages);
     const seconds = Math.round((Date.now() - started) / 1000);
     send('chat:done', { ok: true, seconds, web: webHits.length });
+    const tutoring = config.tutorVideos !== false;
+    if (tutoring) {
+      const prevUser = thread.messages.slice(0, -2).filter((m) => m.role === 'user').pop();
+      tutorFor(date, at, text, prevUser ? prevUser.content : '', false);
+    }
     extractProfileFrom(text, prof)
       .then((next) => {
         if (next) send('chat:profile', { profile: next });
       })
       .catch((e) => console.error('[radar] extractProfile', e));
-    return { ok: true, reply, seconds, web: webHits.map((h) => ({ title: h.title, url: h.url, host: h.host || '' })) };
+    return { ok: true, reply, seconds, at, tutoring, web: webHits.map((h) => ({ title: h.title, url: h.url, host: h.host || '' })) };
   } catch (e) {
     const msg = String((e && e.message) || e);
     send('chat:done', { ok: false, error: msg });
@@ -3712,9 +4626,15 @@ async function maybeNotify() {
   const digest = await readText(path.join(DIR.digests, `${t}.md`));
   const pack = await readJSON(path.join(DIR.data, `${t}.json`), null);
   if (!digest && !pack) return;
-  const body = digest
+  let body = digest
     ? oneLiner(digest)
     : `今天采到 ${((pack.github?.new_repos) || []).length} 个新项目，简报还没生成。`;
+  if (String(config.biliSessdata || '').trim()) {
+    try {
+      const l = await biliLearn(false);
+      if (l.unfinished) body += `\n收藏夹里还有 ${l.unfinished} 个教程没看完${l.cont[0] ? '：' + clipText(l.cont[0].title, 22) : ''}`;
+    } catch { /* 提醒不因为 B站 失败而不发 */ }
+  }
   try {
     if (Notification.isSupported()) {
       const n = new Notification({
@@ -3741,17 +4661,29 @@ ipcMain.handle('digest:generate', async (_e, date) => {
 });
 ipcMain.handle('settings:save', async (_e, patch) => {
   const next = {};
-  for (const k of ['baseUrl', 'model', 'scheduleEnabled', 'scheduleTime', 'matchEnabled', 'pushDaily', 'summaryAll', 'onboarded', 'compact', 'webSearch', 'autoUpdateCheck']) {
+  for (const k of ['baseUrl', 'model', 'scheduleEnabled', 'scheduleTime', 'matchEnabled', 'pushDaily', 'summaryAll', 'onboarded', 'compact', 'webSearch', 'tutorVideos', 'autoUpdateCheck', 'tplStrip', 'briefStyle', 'autoStyle', 'ttsEngine', 'ttsVoice', 'ttsBase', 'ttsModel', 'ttsApiVoice']) {
     if (patch[k] !== undefined) next[k] = patch[k];
   }
   for (const k of ['priceIn', 'priceOut']) {
     if (patch[k] !== undefined) next[k] = Math.max(0, Number(patch[k]) || 0);
   }
+  for (const k of ['ttsRate', 'ttsPitch', 'ttsVolume']) {
+    if (patch[k] !== undefined) next[k] = Math.min(3, Math.max(0, Number(patch[k]) || 0));
+  }
+  if (typeof patch.ttsKey === 'string' && patch.ttsKey.trim()) next.ttsKey = patch.ttsKey.trim().slice(0, 400);
+  if (patch.clearTtsKey) next.ttsKey = '';
   if (typeof patch.apiKey === 'string' && patch.apiKey.trim) {
     const k = patch.apiKey.trim();
     if (k) next.apiKey = k;
   }
   if (patch.clearKey) next.apiKey = '';
+  if (typeof patch.biliSessdata === 'string' && patch.biliSessdata.trim()) {
+    // 允许整段 Cookie 粘进来，只留 SESSDATA 的值
+    const raw = patch.biliSessdata.trim();
+    const m = /SESSDATA=([^;\s]+)/.exec(raw);
+    next.biliSessdata = (m ? m[1] : raw).slice(0, 400);
+  }
+  if (patch.clearBili) next.biliSessdata = '';
   await saveConfig(next);
   return { ok: true, config: publicConfig() };
 });
@@ -3787,7 +4719,10 @@ ipcMain.handle('shell:open', async (_e, url) => {
   return true;
 });
 ipcMain.handle('folder:open', async (_e, which) => {
-  const map = { root: ROOT, inbox: DIR.inbox, digests: DIR.digests, data: DIR.data, prompts: DIR.prompts };
+  const map = { root: ROOT, inbox: DIR.inbox, digests: DIR.digests, data: DIR.data, prompts: DIR.prompts, notes: NOTES_DIR, styles: STYLES_DIR, events: EVENT_REPORT_DIR };
+  if (which === 'notes') await fsp.mkdir(NOTES_DIR, { recursive: true });
+  if (which === 'styles') await fsp.mkdir(STYLES_DIR, { recursive: true });
+  if (which === 'events') await fsp.mkdir(EVENT_REPORT_DIR, { recursive: true });
   await shell.openPath(map[which] || ROOT);
   return true;
 });
@@ -3888,6 +4823,13 @@ if (!app.requestSingleInstanceLock()) {
     const autoCheck = () => { if (config.autoUpdateCheck !== false) void getUpdater().check({ quiet: true }); };
     setTimeout(autoCheck, 15_000);
     setInterval(autoCheck, 6 * 60 * 60_000);
+    setTimeout(async () => {
+      try {
+        const db = await getEvents().load();
+        const stale = !db.lastRun || Date.now() - Date.parse(db.lastRun) > 12 * 3600e3;
+        if (stale && db.events.some((e) => e.status === 'tracking')) await getEvents().refreshAll({ web: true });
+      } catch (e) { console.error('[radar] events on start', e); }
+    }, 25_000);
   });
   app.on('window-all-closed', () => { if (!tray) app.quit(); });
   app.on('before-quit', () => { try { collectChild?.kill(); } catch {} });

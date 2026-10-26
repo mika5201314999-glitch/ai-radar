@@ -4,7 +4,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self' data: blob:;" />
   <title>AI 情报台</title>
   <script src="theme.js"></script>
   <link rel="stylesheet" href="styles.css" />
@@ -45,19 +45,20 @@
         <button type="button" class="nav-item" data-view="weekly"><span class="no">02</span><span class="zh">周报</span><span class="en">Weekly</span></button>
         <button type="button" class="nav-item" data-view="history"><span class="no">03</span><span class="zh">历史</span><span class="n" data-count="history"></span><span class="en">History</span></button>
         <button type="button" class="nav-item" data-view="saved"><span class="no">04</span><span class="zh">收藏</span><span class="n" data-count="saved"></span><span class="en">Saved</span></button>
+        <button type="button" class="nav-item" data-view="events"><span class="no">05</span><span class="zh">追踪事件</span><span class="n" data-count="events"></span><span class="en">Events</span></button>
 
         <p class="nav-group"><span>Find</span>发现</p>
-        <button type="button" class="nav-item" data-view="needs"><span class="no">05</span><span class="zh">需求雷达</span><span class="en">Needs</span></button>
-        <button type="button" class="nav-item" data-view="radar"><span class="no">06</span><span class="zh">原始雷达</span><span class="n" data-count="radar"></span><span class="en">Radar</span></button>
-        <button type="button" class="nav-item" data-view="ext"><span class="no">07</span><span class="zh">扩展能力</span><span class="en">Plugins</span></button>
+        <button type="button" class="nav-item" data-view="needs"><span class="no">06</span><span class="zh">需求雷达</span><span class="en">Needs</span></button>
+        <button type="button" class="nav-item" data-view="radar"><span class="no">07</span><span class="zh">原始雷达</span><span class="n" data-count="radar"></span><span class="en">Radar</span></button>
+        <button type="button" class="nav-item" data-view="ext"><span class="no">08</span><span class="zh">扩展能力</span><span class="en">Plugins</span></button>
 
         <p class="nav-group"><span>Tools</span>工具</p>
-        <button type="button" class="nav-item" data-view="chat"><span class="no">08</span><span class="zh">对话</span><span class="en">Chat</span></button>
-        <button type="button" class="nav-item" data-view="tasks"><span class="no">09</span><span class="zh">模板库</span><span class="en">Templates</span></button>
-        <button type="button" class="nav-item" data-view="concepts"><span class="no">10</span><span class="zh">概念词典</span><span class="en">Glossary</span></button>
-        <button type="button" class="nav-item" data-view="agents"><span class="no">11</span><span class="zh">安装 agent</span><span class="en">Agents</span></button>
+        <button type="button" class="nav-item" data-view="chat"><span class="no">09</span><span class="zh">对话</span><span class="en">Chat</span></button>
+        <button type="button" class="nav-item" data-view="tasks"><span class="no">10</span><span class="zh">模板库</span><span class="en">Templates</span></button>
+        <button type="button" class="nav-item" data-view="concepts"><span class="no">11</span><span class="zh">概念词典</span><span class="en">Glossary</span></button>
+        <button type="button" class="nav-item" data-view="agents"><span class="no">12</span><span class="zh">安装 agent</span><span class="en">Agents</span></button>
 
-        <button type="button" class="nav-item nav-settings" data-view="settings"><span class="no">12</span><span class="zh">设置</span><span class="en">Settings</span></button>
+        <button type="button" class="nav-item nav-settings" data-view="settings"><span class="no">13</span><span class="zh">设置</span><span class="en">Settings</span></button>
       </nav>
 
       <footer class="rail-foot" id="railFoot"></footer>
@@ -67,6 +68,8 @@
       <div class="progress" aria-hidden="true"><i id="prog"></i></div>
       <div class="view" id="view"></div>
     </main>
+
+    <aside class="dock" id="dock" hidden aria-label="常驻侧栏"><div class="dock-body" id="dockBody"></div></aside>
 
     <aside class="drawer" id="drawer" hidden></aside>
   </div>
@@ -89,5 +92,17 @@
   <script src="app.js"></script>
   <aside class="sdoc" id="sdoc" hidden><div class="sdoc-box" id="sdocBox"></div></aside>
   <aside class="sdoc" id="ucard" hidden><div class="sdoc-box"></div></aside>
+  <aside class="sdoc" id="vlearn" hidden><div class="sdoc-box"></div></aside>
+  <aside class="sdoc" id="evcard" hidden><div class="sdoc-box"></div></aside>
+  <div class="selpop" id="selpop" hidden><button type="button" class="mini" data-act="sel-sticky">记到便利贴</button></div>
+  <div class="ttsbar" id="ttsbar" hidden>
+    <span class="tts-eye">// READING</span>
+    <button type="button" class="mini" data-act="tts-prev">上一段</button>
+    <button type="button" class="mini tts-play" data-act="tts-toggle">暂停</button>
+    <button type="button" class="mini" data-act="tts-next">下一段</button>
+    <button type="button" class="mini" data-act="tts-stop">停止</button>
+    <select id="ttsRateSel" aria-label="语速"><option value="0.8">0.8×</option><option value="1">1×</option><option value="1.2">1.2×</option><option value="1.5">1.5×</option><option value="1.8">1.8×</option></select>
+    <span class="tts-now"></span>
+  </div>
 </body>
 </html>

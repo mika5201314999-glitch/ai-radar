@@ -1,5 +1,5 @@
 'use strict';
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
 const on = (channel, cb) => {
   const listener = (_e, payload) => cb(payload);
@@ -8,6 +8,9 @@ const on = (channel, cb) => {
 };
 
 contextBridge.exposeInMainWorld('radar', {
+  // 界面缩放：theme.js 在页面画出来之前就要用，所以放在最前面
+  setZoom: (f) => webFrame.setZoomFactor(Number(f) || 1),
+  getZoom: () => webFrame.getZoomFactor(),
   state: () => ipcRenderer.invoke('state:load'),
   data: (date) => ipcRenderer.invoke('data:load', date),
   index: () => ipcRenderer.invoke('index:read'),
@@ -38,6 +41,28 @@ contextBridge.exposeInMainWorld('radar', {
   chatSend: (text) => ipcRenderer.invoke('chat:send', { text }),
   webSearch: (arg) => ipcRenderer.invoke('web:search', arg),
   chatClear: () => ipcRenderer.invoke('chat:clear'),
+  chatTutor: (at) => ipcRenderer.invoke('chat:tutor', { at }),
+  videoAi: (arg) => ipcRenderer.invoke('video:ai', arg),
+  videoSummary: (arg) => ipcRenderer.invoke('video:summary', arg),
+  videoSaveNote: (url) => ipcRenderer.invoke('video:save-note', { url }),
+  biliLearn: (force) => ipcRenderer.invoke('bili:learn', { force }),
+  digestTitle: (date, force) => ipcRenderer.invoke('digest:title', { date, force }),
+  stickyList: () => ipcRenderer.invoke('sticky:list'),
+  stickySave: (note) => ipcRenderer.invoke('sticky:save', note),
+  stickyDel: (id) => ipcRenderer.invoke('sticky:del', id),
+  styleList: () => ipcRenderer.invoke('style:list'),
+  styleApply: (arg) => ipcRenderer.invoke('style:apply', arg),
+  styleSave: (arg) => ipcRenderer.invoke('style:save', arg),
+  ttsSpeak: (text) => ipcRenderer.invoke('tts:speak', { text }),
+  eventsList: () => ipcRenderer.invoke('events:list'),
+  eventsCreate: (seed) => ipcRenderer.invoke('events:create', seed),
+  eventsUpdate: (arg) => ipcRenderer.invoke('events:update', arg),
+  eventsRemove: (id) => ipcRenderer.invoke('events:remove', id),
+  eventsRefresh: (id) => ipcRenderer.invoke('events:refresh', id),
+  eventsReport: (id) => ipcRenderer.invoke('events:report', id),
+  eventsSaveReport: (id) => ipcRenderer.invoke('events:save-report', id),
+  panoGet: (seed, force) => ipcRenderer.invoke('pano:get', { seed, force }),
+  panoKey: (seed) => ipcRenderer.invoke('pano:key', seed),
   profileLoad: () => ipcRenderer.invoke('profile:load'),
   needAdd: (need) => ipcRenderer.invoke('need:add', need),
   needDel: (id) => ipcRenderer.invoke('need:del', id),
@@ -91,5 +116,12 @@ contextBridge.exposeInMainWorld('radar', {
   onChatDelta: (cb) => on('chat:delta', cb),
   onChatDone: (cb) => on('chat:done', cb),
   onChatProfile: (cb) => on('chat:profile', cb),
+  onChatVideos: (cb) => on('chat:videos', cb),
+  onVideoDelta: (cb) => on('video:delta', cb),
+  onEventsUpdated: (cb) => on('events:updated', cb),
+  onEventsDelta: (cb) => on('events:delta', cb),
+  onPanoProgress: (cb) => on('pano:progress', cb),
+  onPanoDelta: (cb) => on('pano:delta', cb),
+  onStyleDelta: (cb) => on('style:delta', cb),
   onNav: (cb) => on('nav:view', cb),
 });
