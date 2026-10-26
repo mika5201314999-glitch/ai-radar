@@ -36,6 +36,6 @@ local/
 release/out/
 
 # 视频学习存下来的笔记（AI 笔记 / 概括）
-notes/
+/notes/
 # 自己写的简报文字风格（styles/*.md，和 SKILL.md 一个写法）
-styles/
+/styles/

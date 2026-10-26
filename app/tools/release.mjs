@@ -176,7 +176,7 @@ if (dist) {
   for (const d of ['data', 'digests', 'inbox', 'state', 'chats', 'logs']) fs.mkdirSync(path.join(target, d), { recursive: true });
   console.log(`✓ 完整目录：${target}`);
   if (has('--zip')) {
-    zipName = `AI情报台-${version}-windows.zip`;
+    zipName = `ai-radar-${version}-windows.zip`; // 英文名：GitHub 会把附件名里的中文删掉
     const zipPath = path.join(outDir, zipName);
     const r = spawnSync('powershell', ['-NoProfile', '-Command',
       `Compress-Archive -Path '${target.replace(/'/g, "''")}\\*' -DestinationPath '${zipPath.replace(/'/g, "''")}' -CompressionLevel Optimal -Force`], { stdio: 'inherit' });
